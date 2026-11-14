@@ -43,7 +43,7 @@ class ModelBridgeAutoConfigurationTest {
                         "ai.bridge.connect-timeout=3s",
                         "ai.bridge.request-timeout=17s",
                         "ai.bridge.security.loopback-hosts=127.0.0.1,localhost",
-                        "ai.bridge.security.loopback-ports=3425,8080")
+                        "ai.bridge.security.loopback-ports=18080,8080")
                 .run(context -> {
                     ModelBridgeProperties properties = context.getBean(ModelBridgeProperties.class);
                     assertThat(properties.getConnectTimeout()).isEqualTo(Duration.ofSeconds(3));
@@ -51,7 +51,7 @@ class ModelBridgeAutoConfigurationTest {
                     assertThat(properties.getSecurity().getLoopbackHosts())
                             .containsExactlyInAnyOrder("127.0.0.1", "localhost");
                     assertThat(properties.getSecurity().getLoopbackPorts())
-                            .containsExactlyInAnyOrder(3425, 8080);
+                            .containsExactlyInAnyOrder(18080, 8080);
                 });
     }
 
@@ -78,13 +78,13 @@ class ModelBridgeAutoConfigurationTest {
         runner.withPropertyValues(
                         "spring.profiles.active=test",
                         "ai.bridge.security.allow-loopback=true",
-                        "ai.bridge.security.loopback-ports=3425")
+                        "ai.bridge.security.loopback-ports=18080")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     OutboundEndpointPolicy policy = context.getBean(OutboundEndpointPolicy.class);
-                    assertThat(policy.validate(URI.create("http://127.0.0.1:3425/v1/models")).host())
+                    assertThat(policy.validate(URI.create("http://127.0.0.1:18080/v1/models")).host())
                             .isEqualTo("127.0.0.1");
-                    assertThatThrownBy(() -> policy.validate(URI.create("http://127.0.0.1:3426/v1/models")))
+                    assertThatThrownBy(() -> policy.validate(URI.create("http://127.0.0.1:18081/v1/models")))
                             .isInstanceOf(ModelBridgeException.class);
                 });
     }
@@ -108,7 +108,7 @@ class ModelBridgeAutoConfigurationTest {
         runner.withPropertyValues(
                         "spring.profiles.active=prod",
                         "ai.bridge.security.allow-loopback=true",
-                        "ai.bridge.security.loopback-ports=3425")
+                        "ai.bridge.security.loopback-ports=18080")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
@@ -124,7 +124,7 @@ class ModelBridgeAutoConfigurationTest {
                 .withPropertyValues(
                         "spring.profiles.active=prod",
                         "ai.bridge.security.allow-loopback=true",
-                        "ai.bridge.security.loopback-ports=3425")
+                        "ai.bridge.security.loopback-ports=18080")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
@@ -157,7 +157,7 @@ class ModelBridgeAutoConfigurationTest {
     void loopbackIsRejectedByDefault() {
         runner.run(context -> {
             OutboundEndpointPolicy policy = context.getBean(OutboundEndpointPolicy.class);
-            assertThatThrownBy(() -> policy.validate(URI.create("http://127.0.0.1:3425/v1/models")))
+            assertThatThrownBy(() -> policy.validate(URI.create("http://127.0.0.1:18080/v1/models")))
                     .isInstanceOf(ModelBridgeException.class);
         });
     }

@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Rich, OpenAI/Magpie-compatible model metadata. Unknown upstream fields are preserved in
+ * Rich, OpenAI-compatible model metadata. Unknown upstream fields are preserved in
  * {@link #extra}; known fields are normalized for consumers.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -39,6 +39,8 @@ public record ModelDescriptor(
         boolean supportsStructuredOutput,
         @JsonProperty("supports_embeddings")
         boolean supportsEmbeddings,
+        @JsonProperty("supports_rerank")
+        boolean supportsRerank,
         @JsonProperty("reasoning_levels")
         List<String> reasoningLevels,
         @JsonProperty("supported_parameters")
@@ -62,8 +64,25 @@ public record ModelDescriptor(
         pricing = pricing == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(pricing));
         inputModalities = inputModalities == null ? List.of("text") : List.copyOf(inputModalities);
         outputModalities = outputModalities == null ? List.of("text") : List.copyOf(outputModalities);
-        nativeEndpoints = nativeEndpoints == null ? List.of() : List.copyOf(nativeEndpoints);
+        nativeEndpoints = nativeEndpoints == null || nativeEndpoints.isEmpty()
+                ? inferredEndpoints(supportsStreaming, supportsStructuredOutput,
+                        supportsEmbeddings, supportsRerank)
+                : List.copyOf(nativeEndpoints);
         extra = extra == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(extra));
+    }
+
+    public ModelDescriptor(String id, String displayName, String ownedBy, String provider,
+                           Integer contextWindow, Integer maxInputTokens, Integer maxOutputTokens,
+                           boolean supportsTools, boolean supportsReasoning, boolean supportsStreaming,
+                           boolean supportsStructuredOutput, boolean supportsEmbeddings,
+                           List<String> reasoningLevels, List<String> supportedParameters,
+                           Map<String, BigDecimal> pricing, List<String> inputModalities,
+                           List<String> outputModalities, List<String> nativeEndpoints,
+                           Instant createdAt, Map<String, Object> extra) {
+        this(id, displayName, ownedBy, provider, contextWindow, maxInputTokens, maxOutputTokens,
+                supportsTools, supportsReasoning, supportsStreaming, supportsStructuredOutput,
+                supportsEmbeddings, false, reasoningLevels, supportedParameters, pricing,
+                inputModalities, outputModalities, nativeEndpoints, createdAt, extra);
     }
 
     @JsonProperty("reasoning")
@@ -103,6 +122,7 @@ public record ModelDescriptor(
         private boolean supportsStreaming = true;
         private boolean supportsStructuredOutput = true;
         private boolean supportsEmbeddings;
+        private boolean supportsRerank;
         private List<String> reasoningLevels = List.of();
         private List<String> supportedParameters = List.of();
         private Map<String, BigDecimal> pricing = Map.of();
@@ -127,6 +147,7 @@ public record ModelDescriptor(
         public Builder supportsStreaming(boolean value) { this.supportsStreaming = value; return this; }
         public Builder supportsStructuredOutput(boolean value) { this.supportsStructuredOutput = value; return this; }
         public Builder supportsEmbeddings(boolean value) { this.supportsEmbeddings = value; return this; }
+        public Builder supportsRerank(boolean value) { this.supportsRerank = value; return this; }
         public Builder reasoningLevels(List<String> value) { this.reasoningLevels = value; return this; }
         public Builder supportedParameters(List<String> value) { this.supportedParameters = value; return this; }
         public Builder pricing(Map<String, BigDecimal> value) { this.pricing = value; return this; }
@@ -139,8 +160,26 @@ public record ModelDescriptor(
         public ModelDescriptor build() {
             return new ModelDescriptor(id, displayName, ownedBy, provider, contextWindow, maxInputTokens,
                     maxOutputTokens, supportsTools, supportsReasoning, supportsStreaming,
-                    supportsStructuredOutput, supportsEmbeddings, reasoningLevels, supportedParameters,
-                    pricing, inputModalities, outputModalities, nativeEndpoints, createdAt, extra);
+                    supportsStructuredOutput, supportsEmbeddings, supportsRerank, reasoningLevels,
+                    supportedParameters, pricing, inputModalities, outputModalities,
+                    nativeEndpoints, createdAt, extra);
         }
+    }
+
+    private static List<String> inferredEndpoints(boolean supportsStreaming,
+                                                  boolean supportsStructuredOutput,
+                                                  boolean supportsEmbeddings,
+                                                  boolean supportsRerank) {
+        List<String> values = new java.util.ArrayList<>();
+        if (supportsStreaming || supportsStructuredOutput) {
+            values.add("/v1/chat/completions");
+        }
+        if (supportsEmbeddings) {
+            values.add("/v1/embeddings");
+        }
+        if (supportsRerank) {
+            values.add("/v1/rerank");
+        }
+        return List.copyOf(values);
     }
 }

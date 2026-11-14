@@ -4,10 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandle;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandles;
 import io.github.bangshou1st.modelbridge.core.http.Endpoints;
 import io.github.bangshou1st.modelbridge.core.http.HttpTransport;
+import io.github.bangshou1st.modelbridge.core.model.ChatOptions;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
+import io.github.bangshou1st.modelbridge.core.model.ContentPart;
 import io.github.bangshou1st.modelbridge.core.model.FinishReason;
 import io.github.bangshou1st.modelbridge.core.model.Message;
 import io.github.bangshou1st.modelbridge.core.model.ProviderConfig;
@@ -20,9 +24,8 @@ import io.github.bangshou1st.modelbridge.core.model.ToolCall;
 import io.github.bangshou1st.modelbridge.core.model.ToolCallDelta;
 import io.github.bangshou1st.modelbridge.core.model.ToolChoice;
 import io.github.bangshou1st.modelbridge.core.model.ToolDefinition;
-import io.github.bangshou1st.modelbridge.core.model.TurnRequest;
-import io.github.bangshou1st.modelbridge.core.model.TurnResult;
 import io.github.bangshou1st.modelbridge.core.protocol.ChatProtocolAdapter;
+import io.github.bangshou1st.modelbridge.core.protocol.ProtocolId;
 import io.github.bangshou1st.modelbridge.core.security.ModelBridgeException;
 
 import java.util.ArrayList;
@@ -48,26 +51,34 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
     }
 
     @Override
-    public Set<ProviderType> providerTypes() {
-        return Set.of(ProviderType.GEMINI);
+    public Set<ProtocolId> protocols() {
+        return Set.of(ProtocolId.GEMINI);
     }
 
     @Override
     public ChatResponse complete(ProviderConfig provider, ChatRequest request) {
         long started = System.nanoTime();
         JsonNode response = http.postJson(provider, endpoint(provider, request.model(), false),
-                headers(provider), body(request.model(), request.messages(), request.tools(),
-                        request.toolChoice(), request.temperature(), request.maxOutputTokens(),
-                        request.structuredOutput(), request.reasoning()));
-        return parseResponse(response, provider, request.model(), scope(null), started);
+                headers(provider), body(request));
+        return parseResponse(response, provider, request.model(), scope(request.requestId()), started);
     }
 
     @Override
     public void completeStream(ProviderConfig provider, ChatRequest request, Consumer<StreamChunk> consumer) {
+        stream(provider, request, consumer).await();
+    }
+
+    @Override
+    public StreamHandle stream(ProviderConfig provider, ChatRequest request,
+                               Consumer<StreamChunk> consumer) {
+        return StreamHandles.start(StreamHandles.sharedExecutor(),
+                handle -> completeStreamInternal(provider, request, consumer, handle));
+    }
+
+    private void completeStreamInternal(ProviderConfig provider, ChatRequest request,
+                                        Consumer<StreamChunk> consumer, StreamHandle handle) {
         String scope = scope(null);
-        JsonNode requestBody = body(request.model(), request.messages(), request.tools(),
-                request.toolChoice(), request.temperature(), request.maxOutputTokens(),
-                request.structuredOutput(), request.reasoning());
+        JsonNode requestBody = body(request);
         StreamAccumulator accumulator = new StreamAccumulator(request.model(), scope);
         http.postSse(provider, endpoint(provider, request.model(), true), headers(provider), requestBody, event -> {
             if ("[DONE]".equals(event.data())) {
@@ -80,21 +91,11 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
                 throw ModelBridgeException.invalidResponse("invalid Gemini SSE JSON", provider.id(), null);
             }
             accumulator.accept(data, provider.id(), consumer);
-        });
+        }, handle);
+        if (handle.isCancelled()) {
+            return;
+        }
         accumulator.finish(provider, consumer);
-    }
-
-    @Override
-    public TurnResult turn(ProviderConfig provider, TurnRequest request) {
-        long started = System.nanoTime();
-        String scope = scope(request.requestId());
-        JsonNode response = http.postJson(provider, endpoint(provider, request.model(), false),
-                headers(provider), body(request.model(), request.messages(), request.tools(),
-                        request.toolChoice(), request.temperature(), request.maxOutputTokens(),
-                        StructuredOutput.none(), request.reasoning()));
-        ChatResponse parsed = parseResponse(response, provider, request.model(), scope, started);
-        return new TurnResult(parsed.content(), parsed.toolCalls(), parsed.finishReason(), parsed.usage(),
-                provider.id(), parsed.model(), parsed.latencyMs());
     }
 
     private String endpoint(ProviderConfig provider, String model, boolean stream) {
@@ -115,13 +116,19 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
         return headers;
     }
 
-    private ObjectNode body(String model, List<Message> sourceMessages, List<ToolDefinition> tools,
-                            ToolChoice toolChoice, Double temperature, Integer maxOutputTokens,
-                            StructuredOutput structuredOutput, ReasoningOptions reasoning) {
+    private ObjectNode body(ChatRequest request) {
+        String model = request.model();
+        List<Message> sourceMessages = request.messages();
+        List<ToolDefinition> tools = request.tools();
+        ToolChoice toolChoice = request.toolChoice();
+        StructuredOutput structuredOutput = request.structuredOutput();
+        ReasoningOptions reasoning = request.reasoning();
+        ChatOptions options = request.options();
         ObjectNode body = mapper.createObjectNode();
         List<String> systemParts = new ArrayList<>();
         ArrayNode contents = body.putArray("contents");
         PartBuilder partBuilder = new PartBuilder(contents);
+        Map<String, String> toolNamesById = new LinkedHashMap<>();
 
         for (Message message : sourceMessages) {
             switch (message.role()) {
@@ -130,30 +137,20 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
                         systemParts.add(message.content());
                     }
                 }
-                case USER -> {
-                    if (!message.content().isBlank()) {
-                        partBuilder.add("user", textPart(message.content()));
-                    }
-                }
-                case ASSISTANT -> {
-                    if (!message.content().isBlank()) {
-                        partBuilder.add("model", textPart(message.content()));
-                    }
-                    for (ToolCall call : message.toolCalls()) {
-                        ObjectNode part = mapper.createObjectNode();
-                        ObjectNode functionCall = part.putObject("functionCall");
-                        functionCall.put("name", call.name());
-                        functionCall.set("args", call.arguments());
-                        if (call.thoughtSignature() != null && !call.thoughtSignature().isBlank()) {
-                            part.put("thoughtSignature", call.thoughtSignature());
-                        }
-                        partBuilder.add("model", part);
-                    }
-                }
+                case USER -> addUserParts(partBuilder, message);
+                case ASSISTANT -> addAssistantParts(partBuilder, message, toolNamesById);
                 case TOOL -> {
                     ObjectNode part = mapper.createObjectNode();
                     ObjectNode functionResponse = part.putObject("functionResponse");
-                    functionResponse.put("name", message.name() == null ? "" : message.name());
+                    String toolName = message.name();
+                    if (toolName == null || toolName.isBlank()) {
+                        toolName = toolNamesById.get(message.toolCallId());
+                    }
+                    if (toolName == null || toolName.isBlank()) {
+                        throw ModelBridgeException.invalidResponse(
+                                "Gemini tool response is missing the function name", null, null);
+                    }
+                    functionResponse.put("name", toolName);
                     ObjectNode response = functionResponse.putObject("response");
                     JsonNode result = message.toolResult();
                     if (result != null && result.isObject()) {
@@ -181,11 +178,26 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
         }
 
         ObjectNode generation = body.putObject("generationConfig");
-        if (temperature != null) {
-            generation.put("temperature", temperature);
+        if (options.temperature() != null) {
+            generation.put("temperature", options.temperature());
         }
-        if (maxOutputTokens != null) {
-            generation.put("maxOutputTokens", maxOutputTokens);
+        if (options.topP() != null) {
+            generation.put("topP", options.topP());
+        }
+        if (options.maxOutputTokens() != null) {
+            generation.put("maxOutputTokens", options.maxOutputTokens());
+        }
+        if (options.seed() != null) {
+            generation.put("seed", options.seed());
+        }
+        if (options.frequencyPenalty() != null) {
+            generation.put("frequencyPenalty", options.frequencyPenalty());
+        }
+        if (options.presencePenalty() != null) {
+            generation.put("presencePenalty", options.presencePenalty());
+        }
+        if (!options.stop().isEmpty()) {
+            generation.set("stopSequences", mapper.valueToTree(options.stop()));
         }
         if (structuredOutput != null && structuredOutput.mode() != StructuredOutput.Mode.NONE
                 && structuredOutput.mode() != StructuredOutput.Mode.PROMPT_JSON) {
@@ -212,11 +224,79 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
             };
             body.putObject("toolConfig").putObject("functionCallingConfig").put("mode", mode);
         }
+        options.extraBody().forEach((key, value) -> {
+            if (!body.has(key) && !isCoreField(key)) {
+                body.set(key, mapper.valueToTree(value));
+            }
+        });
         return body;
+    }
+
+    private void addUserParts(PartBuilder builder, Message message) {
+        for (ContentPart part : message.parts()) {
+            if (part instanceof ContentPart.Text text) {
+                if (!text.text().isEmpty()) {
+                    builder.add("user", textPart(text.text()));
+                }
+            } else if (part instanceof ContentPart.Image image) {
+                ObjectNode node = mapper.createObjectNode();
+                if (image.base64Data() != null && !image.base64Data().isBlank()) {
+                    ObjectNode inline = node.putObject("inlineData");
+                    inline.put("mimeType", image.mediaType() == null
+                            ? "image/png" : image.mediaType());
+                    inline.put("data", image.base64Data());
+                } else {
+                    ObjectNode file = node.putObject("fileData");
+                    file.put("fileUri", image.url());
+                    file.put("mimeType", image.mediaType() == null
+                            ? "image/png" : image.mediaType());
+                }
+                builder.add("user", node);
+            }
+        }
+    }
+
+    private void addAssistantParts(PartBuilder builder, Message message,
+                                   Map<String, String> toolNamesById) {
+        for (ContentPart part : message.parts()) {
+            if (part instanceof ContentPart.Text text && !text.text().isEmpty()) {
+                builder.add("model", textPart(text.text()));
+            } else if (part instanceof ContentPart.Thinking thinking && !thinking.text().isEmpty()) {
+                ObjectNode node = textPart(thinking.text());
+                node.put("thought", true);
+                if (thinking.signature() != null && !thinking.signature().isBlank()) {
+                    node.put("thoughtSignature", thinking.signature());
+                }
+                builder.add("model", node);
+            }
+        }
+        for (ToolCall call : message.toolCalls()) {
+            toolNamesById.put(call.id(), call.name());
+            ObjectNode part = mapper.createObjectNode();
+            ObjectNode functionCall = part.putObject("functionCall");
+            functionCall.put("name", call.name());
+            functionCall.set("args", call.arguments());
+            if (call.thoughtSignature() != null && !call.thoughtSignature().isBlank()) {
+                part.put("thoughtSignature", call.thoughtSignature());
+            }
+            builder.add("model", part);
+        }
+    }
+
+    private static boolean isCoreField(String key) {
+        return switch (key == null ? "" : key.toLowerCase()) {
+            case "contents", "systeminstruction", "generationconfig", "tools", "toolconfig",
+                    "model" -> true;
+            default -> false;
+        };
     }
 
     private void applyThinking(ObjectNode generation, ReasoningOptions reasoning) {
         if (reasoning == null) {
+            return;
+        }
+        if (Boolean.FALSE.equals(reasoning.enabled())) {
+            generation.putObject("thinkingConfig").put("thinkingBudget", 0);
             return;
         }
         if (reasoning.budgetTokens() != null) {
@@ -240,15 +320,20 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
         StringBuilder content = new StringBuilder();
         StringBuilder reasoning = new StringBuilder();
         List<ToolCall> toolCalls = new ArrayList<>();
+        List<ContentPart> partsList = new ArrayList<>();
         JsonNode parts = response.path("candidates").path(0).path("content").path("parts");
         int toolIndex = 0;
         if (parts.isArray()) {
             for (JsonNode part : parts) {
                 if (part.hasNonNull("text")) {
+                    String text = part.path("text").asText();
+                    String signature = part.path("thoughtSignature").asText(null);
                     if (part.path("thought").asBoolean(false)) {
-                        reasoning.append(part.path("text").asText());
+                        reasoning.append(text);
+                        partsList.add(new ContentPart.Thinking(text, signature));
                     } else {
-                        content.append(part.path("text").asText());
+                        content.append(text);
+                        partsList.add(new ContentPart.Text(text));
                     }
                 }
                 if (part.hasNonNull("functionCall")) {
@@ -270,16 +355,13 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
         TokenUsage usage = usage(response.path("usageMetadata"));
         FinishReason finish = finishReason(response.path("candidates").path(0).path("finishReason").asText(""));
         long latency = elapsedMs(started);
-        if (finish == FinishReason.LENGTH) {
-            throw ModelBridgeException.truncated(provider.id(), usage);
-        }
         if (content.isEmpty() && toolCalls.isEmpty()) {
             throw ModelBridgeException.invalidResponse(
                     "Gemini returned neither text nor function calls", provider.id(), usage);
         }
         String model = response.path("modelVersion").asText(fallbackModel);
         return new ChatResponse(content.toString(), reasoning.isEmpty() ? null : reasoning.toString(),
-                toolCalls, finish, usage, provider.id(), model, latency, Map.of());
+                toolCalls, finish, usage, provider.id(), model, latency, Map.of(), partsList);
     }
 
     private TokenUsage usage(JsonNode usage) {
@@ -389,9 +471,12 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
                             args = mapper.createObjectNode();
                         }
                         int index = toolIndex++;
-                        consumer.accept(StreamChunk.toolCall(
+                        String signature = part.path("thoughtSignature").asText("");
+                        java.util.Map<String, Object> metadata = signature.isBlank()
+                                ? Map.of() : Map.of("thought_signature", signature);
+                        consumer.accept(new StreamChunk(StreamChunk.Type.TOOL_CALL_DELTA, "",
                                 new ToolCallDelta(index, toolId(scope, index), name, args.toString()),
-                                model, provider));
+                                null, null, model, provider, metadata));
                     }
                 }
             }
@@ -401,9 +486,6 @@ public final class GeminiAdapter implements ChatProtocolAdapter {
         }
 
         private void finish(ProviderConfig provider, Consumer<StreamChunk> consumer) {
-            if (finish == FinishReason.LENGTH) {
-                throw ModelBridgeException.truncated(provider.id(), usage);
-            }
             if (content.isEmpty() && reasoning.isEmpty() && toolIndex == 0) {
                 throw ModelBridgeException.invalidResponse(
                         "Gemini stream returned neither text nor function calls", provider.id(), usage);

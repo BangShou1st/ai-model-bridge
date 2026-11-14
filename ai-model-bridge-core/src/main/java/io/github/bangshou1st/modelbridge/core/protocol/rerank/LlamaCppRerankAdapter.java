@@ -13,6 +13,7 @@ import io.github.bangshou1st.modelbridge.core.model.RerankMatch;
 import io.github.bangshou1st.modelbridge.core.model.RerankResult;
 import io.github.bangshou1st.modelbridge.core.model.TokenUsage;
 import io.github.bangshou1st.modelbridge.core.protocol.RerankProtocolAdapter;
+import io.github.bangshou1st.modelbridge.core.protocol.ProtocolId;
 import io.github.bangshou1st.modelbridge.core.security.ModelBridgeException;
 
 import java.util.ArrayList;
@@ -37,8 +38,8 @@ public final class LlamaCppRerankAdapter implements RerankProtocolAdapter {
     }
 
     @Override
-    public Set<ProviderType> providerTypes() {
-        return Set.of(ProviderType.LLAMA_CPP);
+    public Set<ProtocolId> protocols() {
+        return Set.of(ProtocolId.LLAMA_CPP);
     }
 
     @Override

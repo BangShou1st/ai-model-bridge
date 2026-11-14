@@ -24,37 +24,37 @@ class ModelDiscoveryClientTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
-    void parsesMagpieRichModelMetadata() throws Exception {
+    void parsesRichVendorModelMetadata() throws Exception {
         try (LocalFeatureServer server = LocalFeatureServer.start(request -> new LocalFeatureServer.Response(
                 200, "application/json",
                 """
-                {"data":[{"context_length":960000,"context_window":960000,"created":0,
-                "created_at":"2025-01-01T00:00:00Z","display_name":"Hy4",
-                "id":"workbuddy/hy4free","magpie_label":"Hy4 · WorkBuddy",
-                "max_input_tokens":960000,"max_output_tokens":64000,
+                {"data":[{"context_length":131072,"context_window":131072,"created":0,
+                "created_at":"2025-01-01T00:00:00Z","display_name":"Vendor Chat",
+                "id":"vendor/chat-model","vendor_label":"Vendor Chat",
+                "max_input_tokens":131072,"max_output_tokens":8192,
                 "modalities":{"input":["text","image"],"output":["text"]},
                 "native_endpoints":["/v1/chat/completions"],"object":"model",
-                "owned_by":"workbuddy","pricing":{"completion":"0","prompt":"0",
-                "input_cache_read":"0.000000003"},"reasoning":true,"reasoning_levels":["high"],
+                "owned_by":"vendor","pricing":{"completion":"0","prompt":"0",
+                "input_cache_read":"0.000000003"},"reasoning":true,"reasoning_levels":["medium"],
                 "supported_parameters":["tools","tool_choice","reasoning"],
-                "supported_reasoning_levels":[{"effort":"high"}],"tool_call":true,"type":"model"}],
-                "first_id":"workbuddy/hy4free","has_more":false,
-                "last_id":"workbuddy/hy4free","object":"list"}
+                "supported_reasoning_levels":[{"effort":"medium"}],"tool_call":true,"type":"model"}],
+                "first_id":"vendor/chat-model","has_more":false,
+                "last_id":"vendor/chat-model","object":"list"}
                 """))) {
             ModelDiscoveryClient client = client(server);
             List<ModelDescriptor> models = client.discover(provider(server, ProviderType.OPENAI_COMPATIBLE, "key"));
 
             assertThat(models).hasSize(1);
             ModelDescriptor model = models.getFirst();
-            assertThat(model.id()).isEqualTo("workbuddy/hy4free");
-            assertThat(model.displayName()).isEqualTo("Hy4");
-            assertThat(model.ownedBy()).isEqualTo("workbuddy");
-            assertThat(model.contextWindow()).isEqualTo(960000);
-            assertThat(model.maxInputTokens()).isEqualTo(960000);
-            assertThat(model.maxOutputTokens()).isEqualTo(64000);
+            assertThat(model.id()).isEqualTo("vendor/chat-model");
+            assertThat(model.displayName()).isEqualTo("Vendor Chat");
+            assertThat(model.ownedBy()).isEqualTo("vendor");
+            assertThat(model.contextWindow()).isEqualTo(131072);
+            assertThat(model.maxInputTokens()).isEqualTo(131072);
+            assertThat(model.maxOutputTokens()).isEqualTo(8192);
             assertThat(model.supportsTools()).isTrue();
             assertThat(model.supportsReasoning()).isTrue();
-            assertThat(model.reasoningLevels()).containsExactly("high");
+            assertThat(model.reasoningLevels()).containsExactly("medium");
             assertThat(model.supportedParameters()).contains("tools", "reasoning");
             assertThat(model.pricing()).containsEntry("completion", BigDecimal.ZERO)
                     .containsEntry("input_cache_read", new BigDecimal("0.000000003"));
@@ -62,7 +62,7 @@ class ModelDiscoveryClientTest {
             assertThat(model.outputModalities()).containsExactly("text");
             assertThat(model.nativeEndpoints()).containsExactly("/v1/chat/completions");
             assertThat(model.createdAt()).isEqualTo(Instant.parse("2025-01-01T00:00:00Z"));
-            assertThat(model.extra()).containsEntry("magpie_label", "Hy4 · WorkBuddy");
+            assertThat(model.extra()).containsEntry("vendor_label", "Vendor Chat");
             assertThat(server.requests().getFirst().path()).isEqualTo("/v1/models");
             assertThat(server.requests().getFirst().header("authorization")).isEqualTo("Bearer key");
         }

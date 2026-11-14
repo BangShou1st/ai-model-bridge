@@ -10,7 +10,15 @@ import java.util.Set;
 public interface RerankProtocolAdapter {
     String name();
 
-    Set<ProviderType> providerTypes();
+    default Set<ProtocolId> protocols() {
+        return providerTypes().stream().map(ProviderType::toProtocolId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    @Deprecated
+    default Set<ProviderType> providerTypes() {
+        return Set.of();
+    }
 
     RerankResult rerank(ProviderConfig provider, RerankRequest request);
 }

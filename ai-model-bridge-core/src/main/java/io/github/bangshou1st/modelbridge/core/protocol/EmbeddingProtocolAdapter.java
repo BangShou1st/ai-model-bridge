@@ -10,7 +10,15 @@ import java.util.Set;
 public interface EmbeddingProtocolAdapter {
     String name();
 
-    Set<ProviderType> providerTypes();
+    default Set<ProtocolId> protocols() {
+        return providerTypes().stream().map(ProviderType::toProtocolId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    @Deprecated
+    default Set<ProviderType> providerTypes() {
+        return Set.of();
+    }
 
     EmbeddingResult embed(ProviderConfig provider, EmbeddingRequest request);
 }

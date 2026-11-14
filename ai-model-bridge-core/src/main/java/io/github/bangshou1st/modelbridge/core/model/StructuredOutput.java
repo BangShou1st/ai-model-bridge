@@ -20,9 +20,6 @@ public record StructuredOutput(Mode mode, String name, JsonNode schema, boolean 
         if (mode == Mode.JSON_SCHEMA && schema == null) {
             throw new IllegalArgumentException("JSON_SCHEMA requires a schema");
         }
-        if (mode == Mode.PROMPT_JSON && schema == null) {
-            throw new IllegalArgumentException("PROMPT_JSON requires a schema or object instruction");
-        }
     }
 
     public static StructuredOutput none() {

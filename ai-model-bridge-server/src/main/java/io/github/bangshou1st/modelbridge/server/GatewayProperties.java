@@ -119,6 +119,8 @@ public class GatewayProperties {
         private boolean supportsReasoning;
         private boolean supportsStreaming = true;
         private boolean supportsStructuredOutput = true;
+        private boolean supportsEmbeddings;
+        private boolean supportsRerank;
         private List<String> reasoningLevels = new ArrayList<>();
         private List<String> supportedParameters = new ArrayList<>();
         private Map<String, BigDecimal> pricing = new LinkedHashMap<>();
@@ -204,6 +206,22 @@ public class GatewayProperties {
 
         public void setSupportsStructuredOutput(boolean supportsStructuredOutput) {
             this.supportsStructuredOutput = supportsStructuredOutput;
+        }
+
+        public boolean isSupportsEmbeddings() {
+            return supportsEmbeddings;
+        }
+
+        public void setSupportsEmbeddings(boolean supportsEmbeddings) {
+            this.supportsEmbeddings = supportsEmbeddings;
+        }
+
+        public boolean isSupportsRerank() {
+            return supportsRerank;
+        }
+
+        public void setSupportsRerank(boolean supportsRerank) {
+            this.supportsRerank = supportsRerank;
         }
 
         public List<String> getReasoningLevels() {

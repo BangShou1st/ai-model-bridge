@@ -4,14 +4,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandle;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandles;
 import io.github.bangshou1st.modelbridge.core.http.HttpTransport;
 import io.github.bangshou1st.modelbridge.core.http.Endpoints;
+import io.github.bangshou1st.modelbridge.core.model.ChatOptions;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
+import io.github.bangshou1st.modelbridge.core.model.ContentPart;
 import io.github.bangshou1st.modelbridge.core.model.FinishReason;
 import io.github.bangshou1st.modelbridge.core.model.Message;
 import io.github.bangshou1st.modelbridge.core.model.ProviderConfig;
 import io.github.bangshou1st.modelbridge.core.model.ProviderType;
+import io.github.bangshou1st.modelbridge.core.model.ReasoningOptions;
 import io.github.bangshou1st.modelbridge.core.model.StreamChunk;
 import io.github.bangshou1st.modelbridge.core.model.StructuredOutput;
 import io.github.bangshou1st.modelbridge.core.model.TokenUsage;
@@ -19,9 +24,8 @@ import io.github.bangshou1st.modelbridge.core.model.ToolCall;
 import io.github.bangshou1st.modelbridge.core.model.ToolCallDelta;
 import io.github.bangshou1st.modelbridge.core.model.ToolChoice;
 import io.github.bangshou1st.modelbridge.core.model.ToolDefinition;
-import io.github.bangshou1st.modelbridge.core.model.TurnRequest;
-import io.github.bangshou1st.modelbridge.core.model.TurnResult;
 import io.github.bangshou1st.modelbridge.core.protocol.ChatProtocolAdapter;
+import io.github.bangshou1st.modelbridge.core.protocol.ProtocolId;
 import io.github.bangshou1st.modelbridge.core.security.ModelBridgeException;
 
 import java.util.ArrayList;
@@ -47,25 +51,33 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
     }
 
     @Override
-    public Set<ProviderType> providerTypes() {
-        return Set.of(ProviderType.ANTHROPIC);
+    public Set<ProtocolId> protocols() {
+        return Set.of(ProtocolId.ANTHROPIC);
     }
 
     @Override
     public ChatResponse complete(ProviderConfig provider, ChatRequest request) {
         long started = System.nanoTime();
         JsonNode response = http.postJson(provider, endpoint(provider), headers(provider),
-                body(request.model(), request.messages(), request.tools(), request.toolChoice(),
-                        request.temperature(), request.maxOutputTokens(), request.structuredOutput(),
-                        false));
+                body(request, request.structuredOutput(), false));
         return parseResponse(response, provider, request.model(), started);
     }
 
     @Override
     public void completeStream(ProviderConfig provider, ChatRequest request, Consumer<StreamChunk> consumer) {
-        JsonNode requestBody = body(request.model(), request.messages(), request.tools(),
-                request.toolChoice(), request.temperature(), request.maxOutputTokens(),
-                request.structuredOutput(), true);
+        stream(provider, request, consumer).await();
+    }
+
+    @Override
+    public StreamHandle stream(ProviderConfig provider, ChatRequest request,
+                               Consumer<StreamChunk> consumer) {
+        return StreamHandles.start(StreamHandles.sharedExecutor(),
+                handle -> completeStreamInternal(provider, request, consumer, handle));
+    }
+
+    private void completeStreamInternal(ProviderConfig provider, ChatRequest request,
+                                        Consumer<StreamChunk> consumer, StreamHandle handle) {
+        JsonNode requestBody = body(request, request.structuredOutput(), true);
         StreamAccumulator accumulator = new StreamAccumulator(request.model());
         http.postSse(provider, endpoint(provider), headers(provider), requestBody, event -> {
             if ("[DONE]".equals(event.data())) {
@@ -135,19 +147,11 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
                     // ping and future event types are intentionally ignored.
                 }
             }
-        });
+        }, handle);
+        if (handle.isCancelled()) {
+            return;
+        }
         accumulator.finish(provider, consumer);
-    }
-
-    @Override
-    public TurnResult turn(ProviderConfig provider, TurnRequest request) {
-        long started = System.nanoTime();
-        JsonNode response = http.postJson(provider, endpoint(provider), headers(provider),
-                body(request.model(), request.messages(), request.tools(), request.toolChoice(),
-                        request.temperature(), request.maxOutputTokens(), StructuredOutput.none(), false));
-        ChatResponse parsed = parseResponse(response, provider, request.model(), started);
-        return new TurnResult(parsed.content(), parsed.toolCalls(), parsed.finishReason(), parsed.usage(),
-                provider.id(), parsed.model(), parsed.latencyMs());
     }
 
     private String endpoint(ProviderConfig provider) {
@@ -161,16 +165,28 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
         return headers;
     }
 
-    private ObjectNode body(String model, List<Message> sourceMessages, List<ToolDefinition> tools,
-                            ToolChoice toolChoice, Double temperature, Integer maxOutputTokens,
-                            StructuredOutput structuredOutput, boolean stream) {
+    private ObjectNode body(ChatRequest request, StructuredOutput structuredOutput,
+                            boolean stream) {
+        String model = request.model();
+        List<Message> sourceMessages = request.messages();
+        List<ToolDefinition> tools = request.tools();
+        ToolChoice toolChoice = request.toolChoice();
+        ChatOptions options = request.options();
+        ReasoningOptions reasoning = request.reasoning();
         ObjectNode body = mapper.createObjectNode();
         body.put("model", model);
-        body.put("max_tokens", maxOutputTokens == null ? 1024 : maxOutputTokens);
+        body.put("max_tokens", options.maxOutputTokens() == null ? 1024 : options.maxOutputTokens());
         body.put("stream", stream);
-        if (temperature != null) {
-            body.put("temperature", temperature);
+        if (options.temperature() != null) {
+            body.put("temperature", options.temperature());
         }
+        if (options.topP() != null) {
+            body.put("top_p", options.topP());
+        }
+        if (!options.stop().isEmpty()) {
+            body.set("stop_sequences", mapper.valueToTree(options.stop()));
+        }
+        addThinking(body, reasoning, options.maxOutputTokens());
 
         List<String> systemParts = new ArrayList<>();
         ArrayNode messages = body.putArray("messages");
@@ -182,24 +198,8 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
                         systemParts.add(message.content());
                     }
                 }
-                case USER -> {
-                    if (!message.content().isBlank()) {
-                        roleBuilder.add("user", textBlock(message.content()));
-                    }
-                }
-                case ASSISTANT -> {
-                    if (!message.content().isBlank()) {
-                        roleBuilder.add("assistant", textBlock(message.content()));
-                    }
-                    for (ToolCall call : message.toolCalls()) {
-                        ObjectNode block = mapper.createObjectNode();
-                        block.put("type", "tool_use");
-                        block.put("id", call.id());
-                        block.put("name", call.name());
-                        block.set("input", call.arguments());
-                        roleBuilder.add("assistant", block);
-                    }
-                }
+                case USER -> addUserContent(roleBuilder, message);
+                case ASSISTANT -> addAssistantContent(roleBuilder, message);
                 case TOOL -> {
                     ObjectNode block = mapper.createObjectNode();
                     block.put("type", "tool_result");
@@ -234,13 +234,108 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
             }
         }
 
-        if (structuredOutput != null && structuredOutput.schema() != null
-                && structuredOutput.mode() != StructuredOutput.Mode.NONE) {
-            ObjectNode format = body.putObject("output_config").putObject("format");
-            format.put("type", "json_schema");
-            format.set("schema", structuredOutput.schema());
+        if (structuredOutput != null && structuredOutput.enabled()) {
+            if (structuredOutput.mode() == StructuredOutput.Mode.JSON_SCHEMA) {
+                ObjectNode format = body.putObject("output_config").putObject("format");
+                format.put("type", "json_schema");
+                format.set("schema", structuredOutput.schema());
+            } else {
+                systemParts.add(promptInstruction(structuredOutput));
+                if (!systemParts.isEmpty()) {
+                    body.put("system", String.join("\n\n", systemParts));
+                }
+            }
         }
+        options.extraBody().forEach((key, value) -> {
+            if (!body.has(key) && !isCoreField(key)) {
+                body.set(key, mapper.valueToTree(value));
+            }
+        });
         return body;
+    }
+
+    private void addUserContent(RoleBuilder builder, Message message) {
+        for (ContentPart part : message.parts()) {
+            if (part instanceof ContentPart.Text text) {
+                if (!text.text().isEmpty()) {
+                    builder.add("user", textBlock(text.text()));
+                }
+            } else if (part instanceof ContentPart.Image image) {
+                ObjectNode block = mapper.createObjectNode().put("type", "image");
+                ObjectNode source = block.putObject("source");
+                if (image.base64Data() != null && !image.base64Data().isBlank()) {
+                    source.put("type", "base64");
+                    source.put("media_type", image.mediaType() == null
+                            ? "image/png" : image.mediaType());
+                    source.put("data", image.base64Data());
+                } else {
+                    source.put("type", "url");
+                    source.put("url", image.url());
+                }
+                builder.add("user", block);
+            }
+        }
+    }
+
+    private void addAssistantContent(RoleBuilder builder, Message message) {
+        for (ContentPart part : message.parts()) {
+            if (part instanceof ContentPart.Thinking thinking) {
+                ObjectNode block = mapper.createObjectNode().put("type", "thinking")
+                        .put("thinking", thinking.text());
+                if (thinking.signature() != null && !thinking.signature().isBlank()) {
+                    block.put("signature", thinking.signature());
+                }
+                builder.add("assistant", block);
+            } else if (part instanceof ContentPart.Text text) {
+                if (!text.text().isEmpty()) {
+                    builder.add("assistant", textBlock(text.text()));
+                }
+            }
+        }
+        for (ToolCall call : message.toolCalls()) {
+            ObjectNode block = mapper.createObjectNode();
+            block.put("type", "tool_use");
+            block.put("id", call.id());
+            block.put("name", call.name());
+            block.set("input", call.arguments());
+            builder.add("assistant", block);
+        }
+    }
+
+    private static boolean isCoreField(String key) {
+        return switch (key == null ? "" : key.toLowerCase()) {
+            case "model", "messages", "stream", "tools", "tool_choice", "system",
+                    "max_tokens", "temperature", "top_p", "stop_sequences", "thinking",
+                    "output_config" -> true;
+            default -> false;
+        };
+    }
+
+    private static void addThinking(ObjectNode body, ReasoningOptions reasoning, Integer maxOutputTokens) {
+        if (reasoning == null || Boolean.FALSE.equals(reasoning.enabled())) {
+            return;
+        }
+        Integer budget = reasoning.budgetTokens();
+        if (budget == null && Boolean.TRUE.equals(reasoning.enabled())) {
+            int outputLimit = maxOutputTokens == null ? 1024 : maxOutputTokens;
+            budget = Math.max(1, Math.min(4096, outputLimit / 2));
+        }
+        if (budget == null || budget <= 0) {
+            return;
+        }
+        ObjectNode thinking = body.putObject("thinking");
+        thinking.put("type", "enabled");
+        thinking.put("budget_tokens", budget);
+    }
+
+    private static String promptInstruction(StructuredOutput structuredOutput) {
+        StringBuilder instruction = new StringBuilder(
+                "Return only one valid JSON value, with no Markdown fences or explanatory text.");
+        if (structuredOutput.schema() != null) {
+            instruction.append(" The value must satisfy this JSON Schema:\n")
+                    .append(structuredOutput.schema());
+        }
+        return instruction.toString();
     }
 
     private ObjectNode textBlock(String text) {
@@ -255,12 +350,23 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
         StringBuilder content = new StringBuilder();
         StringBuilder reasoning = new StringBuilder();
         List<ToolCall> toolCalls = new ArrayList<>();
+        List<ContentPart> parts = new ArrayList<>();
         JsonNode blocks = response.path("content");
         if (blocks.isArray()) {
             for (JsonNode block : blocks) {
                 switch (block.path("type").asText()) {
-                    case "text" -> content.append(block.path("text").asText(""));
-                    case "thinking" -> reasoning.append(block.path("thinking").asText(""));
+                    case "text" -> {
+                        String text = block.path("text").asText("");
+                        content.append(text);
+                        parts.add(new ContentPart.Text(text));
+                    }
+                    case "thinking" -> {
+                        String thinking = block.path("thinking").asText("");
+                        String signature = block.hasNonNull("signature")
+                                ? block.path("signature").asText() : null;
+                        reasoning.append(thinking);
+                        parts.add(new ContentPart.Thinking(thinking, signature));
+                    }
                     case "tool_use" -> {
                         JsonNode input = block.path("input");
                         if (!input.isObject()) {
@@ -283,16 +389,13 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
         TokenUsage usage = usage(response.path("usage"));
         FinishReason finish = finishReason(response.path("stop_reason").asText(""));
         long latency = elapsedMs(started);
-        if (finish == FinishReason.LENGTH) {
-            throw ModelBridgeException.truncated(provider.id(), usage);
-        }
         if (content.isEmpty() && toolCalls.isEmpty()) {
             throw ModelBridgeException.invalidResponse(
                     "Anthropic returned neither text nor tool calls", provider.id(), usage);
         }
         String responseModel = response.path("model").asText(fallbackModel);
         return new ChatResponse(content.toString(), reasoning.isEmpty() ? null : reasoning.toString(),
-                toolCalls, finish, usage, provider.id(), responseModel, latency, Map.of());
+                toolCalls, finish, usage, provider.id(), responseModel, latency, Map.of(), parts);
     }
 
     private TokenUsage usage(JsonNode usage) {
@@ -380,9 +483,6 @@ public final class AnthropicAdapter implements ChatProtocolAdapter {
         private void finish(ProviderConfig provider, Consumer<StreamChunk> consumer) {
             TokenUsage usage = new TokenUsage(inputTokens, outputTokens, null, null, cachedTokens);
             FinishReason finish = finishReason(stopReason);
-            if (finish == FinishReason.LENGTH) {
-                throw ModelBridgeException.truncated(provider.id(), usage);
-            }
             if (content.isEmpty() && tools.isEmpty()) {
                 throw ModelBridgeException.invalidResponse(
                         "Anthropic stream returned neither text nor tool calls", provider.id(), usage);

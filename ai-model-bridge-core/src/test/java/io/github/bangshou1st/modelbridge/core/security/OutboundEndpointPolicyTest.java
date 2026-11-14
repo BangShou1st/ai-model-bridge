@@ -49,14 +49,14 @@ class OutboundEndpointPolicyTest {
     @Test
     void loopbackRequiresExplicitHostAndPortWhitelist() {
         OutboundEndpointPolicy policy = new OutboundEndpointPolicy(true,
-                Set.of("127.0.0.1"), Set.of(3425),
+                Set.of("127.0.0.1"), Set.of(18080),
                 host -> new InetAddress[]{unchecked("127.0.0.1")});
 
-        assertThat(policy.validate(URI.create("http://127.0.0.1:3425/v1/models")).host())
+        assertThat(policy.validate(URI.create("http://127.0.0.1:18080/v1/models")).host())
                 .isEqualTo("127.0.0.1");
-        assertThatThrownBy(() -> policy.validate(URI.create("http://127.0.0.1:3426/v1/models")))
+        assertThatThrownBy(() -> policy.validate(URI.create("http://127.0.0.1:18081/v1/models")))
                 .isInstanceOf(ModelBridgeException.class);
-        assertThatThrownBy(() -> policy.validate(URI.create("https://localhost:3425/v1")))
+        assertThatThrownBy(() -> policy.validate(URI.create("https://localhost:18080/v1")))
                 .isInstanceOf(ModelBridgeException.class);
     }
 
@@ -70,6 +70,32 @@ class OutboundEndpointPolicyTest {
                 .isInstanceOf(ModelBridgeException.class);
         assertThatThrownBy(() -> policy.validate(URI.create(
                 "https://metadata.google.internal/v1")))
+                .isInstanceOf(ModelBridgeException.class);
+    }
+
+    @Test
+    void privateNetworkModeAllowsInternalHttpButNeverMetadata() {
+        OutboundEndpointPolicy policy = new OutboundEndpointPolicy(
+                NetworkPolicyMode.ALLOW_PRIVATE_NETWORK, false, Set.of(), Set.of(),
+                host -> new InetAddress[]{unchecked(host.equals("metadata")
+                        ? "169.254.169.254" : "10.12.0.8")});
+
+        assertThat(policy.validate(URI.create("http://internal.example:8080/v1")).host())
+                .isEqualTo("internal.example");
+        assertThatThrownBy(() -> policy.validate(URI.create("http://metadata/v1")))
+                .isInstanceOf(ModelBridgeException.class)
+                .extracting(error -> ((ModelBridgeException) error).category())
+                .isEqualTo(ErrorCategory.NETWORK_POLICY);
+    }
+
+    @Test
+    void privateNetworkModeStillRequiresLoopbackOptIn() {
+        OutboundEndpointPolicy policy = new OutboundEndpointPolicy(
+                NetworkPolicyMode.ALLOW_PRIVATE_NETWORK, false, Set.of("127.0.0.1"),
+                Set.of(11434), host -> new InetAddress[]{unchecked("127.0.0.1")});
+
+        assertThatThrownBy(() -> policy.validate(
+                URI.create("http://127.0.0.1:11434/api/tags")))
                 .isInstanceOf(ModelBridgeException.class);
     }
 

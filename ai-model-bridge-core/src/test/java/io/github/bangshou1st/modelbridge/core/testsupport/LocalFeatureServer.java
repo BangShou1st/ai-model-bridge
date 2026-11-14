@@ -60,6 +60,7 @@ public final class LocalFeatureServer implements AutoCloseable {
                 : response.body().getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type",
                 response.contentType() == null ? "application/json" : response.contentType());
+        response.headers().forEach(exchange.getResponseHeaders()::set);
         if (response.status() == 204) {
             exchange.sendResponseHeaders(204, -1);
         } else {
@@ -91,7 +92,15 @@ public final class LocalFeatureServer implements AutoCloseable {
         }
     }
 
-    public record Response(int status, String contentType, String body) {
+    public record Response(int status, String contentType, String body,
+                           Map<String, String> headers) {
+        public Response(int status, String contentType, String body) {
+            this(status, contentType, body, Map.of());
+        }
+
+        public Response {
+            headers = headers == null ? Map.of() : Map.copyOf(headers);
+        }
     }
 
     @FunctionalInterface

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
+import io.github.bangshou1st.modelbridge.core.model.ContentPart;
 import io.github.bangshou1st.modelbridge.core.model.EmbeddingRequest;
 import io.github.bangshou1st.modelbridge.core.model.EmbeddingResult;
 import io.github.bangshou1st.modelbridge.core.model.FinishReason;
@@ -60,7 +61,7 @@ public class OpenAiWireMapper {
             maxTokens = integer(body.path("max_tokens"));
         }
         Double temperature = decimal(body.path("temperature"));
-        ChatRequest request = ChatRequest.builder(model)
+        ChatRequest.Builder requestBuilder = ChatRequest.builder(model)
                 .messages(messages)
                 .tools(tools)
                 .toolChoice(toolChoice)
@@ -68,7 +69,31 @@ public class OpenAiWireMapper {
                 .reasoning(reasoning)
                 .temperature(temperature)
                 .maxOutputTokens(maxTokens)
-                .build();
+                .topP(decimal(body.path("top_p")))
+                .frequencyPenalty(decimal(body.path("frequency_penalty")))
+                .presencePenalty(decimal(body.path("presence_penalty")));
+        Integer seed = integer(body.path("seed"));
+        if (seed != null) {
+            requestBuilder.seed(seed.longValue());
+            requestBuilder.providerOption("seed", seed);
+        }
+        JsonNode stop = body.path("stop");
+        if (stop.isTextual() && !stop.asText().isBlank()) {
+            requestBuilder.stop(stop.asText());
+            requestBuilder.providerOption("stop", stop.asText());
+        } else if (stop.isArray() && !stop.isEmpty()) {
+            List<String> values = new ArrayList<>();
+            stop.forEach(value -> {
+                if (value.isTextual()) {
+                    values.add(value.asText());
+                }
+            });
+            if (!values.isEmpty()) {
+                requestBuilder.stop(values);
+                requestBuilder.providerOption("stop", List.copyOf(values));
+            }
+        }
+        ChatRequest request = requestBuilder.build();
         return new ParsedChat(request, body.path("stream").asBoolean(false), model);
     }
 
@@ -136,7 +161,11 @@ public class OpenAiWireMapper {
         ObjectNode message = choice.putObject("message");
         message.put("role", "assistant");
         if (response.hasToolCalls()) {
-            message.putNull("content");
+            if (response.content().isBlank()) {
+                message.putNull("content");
+            } else {
+                message.put("content", response.content());
+            }
         } else {
             message.put("content", response.content());
         }
@@ -149,6 +178,9 @@ public class OpenAiWireMapper {
                 ObjectNode item = calls.addObject();
                 item.put("id", call.id());
                 item.put("type", "function");
+                if (call.thoughtSignature() != null && !call.thoughtSignature().isBlank()) {
+                    item.put("thought_signature", call.thoughtSignature());
+                }
                 ObjectNode function = item.putObject("function");
                 function.put("name", call.name());
                 function.put("arguments", call.arguments().toString());
@@ -204,6 +236,10 @@ public class OpenAiWireMapper {
                 function.put("name", chunk.toolCall().name());
             }
             function.put("arguments", chunk.toolCall().argumentsDelta());
+            Object thoughtSignature = chunk.metadata().get("thought_signature");
+            if (thoughtSignature != null && !String.valueOf(thoughtSignature).isBlank()) {
+                item.put("thought_signature", String.valueOf(thoughtSignature));
+            }
         }
         choice.putNull("finish_reason");
         return root;
@@ -265,9 +301,22 @@ public class OpenAiWireMapper {
         String content = contentText(item.path("content"));
         return switch (role) {
             case "system" -> Message.system(content);
-            case "user" -> Message.user(content);
-            case "assistant" -> Message.assistant(content,
-                    parseToolCalls(item.path("tool_calls")));
+            case "user" -> {
+                List<ContentPart> parts = parseParts(item.path("content"));
+                yield parts.stream().anyMatch(ContentPart.Image.class::isInstance)
+                        ? Message.user(parts) : Message.user(content);
+            }
+            case "assistant" -> {
+                List<ContentPart> parts = new ArrayList<>(parseParts(item.path("content")));
+                String reasoning = text(item.path("reasoning_content"));
+                if (!reasoning.isBlank()) {
+                    parts.add(new ContentPart.Thinking(reasoning, null));
+                }
+                yield parts.stream().anyMatch(part -> part instanceof ContentPart.Image
+                                || part instanceof ContentPart.Thinking)
+                        ? Message.assistant(parts, parseToolCalls(item.path("tool_calls")))
+                        : Message.assistant(content, parseToolCalls(item.path("tool_calls")));
+            }
             case "tool" -> Message.tool(text(item.path("tool_call_id")),
                     text(item.path("name")), content);
             default -> throw GatewayException.badRequest("unsupported message role: " + role);
@@ -288,7 +337,15 @@ public class OpenAiWireMapper {
             if (id.isBlank() || name.isBlank()) {
                 throw GatewayException.badRequest("tool call is missing id or function.name");
             }
-            calls.add(new ToolCall(id, name, parseArguments(item.path("function").path("arguments"))));
+            String thoughtSignature = blankToNull(text(item.path("thought_signature")));
+            if (thoughtSignature == null) {
+                thoughtSignature = blankToNull(text(item.path("thoughtSignature")));
+            }
+            if (thoughtSignature == null) {
+                thoughtSignature = blankToNull(text(item.path("function").path("thought_signature")));
+            }
+            calls.add(new ToolCall(id, name, parseArguments(item.path("function").path("arguments")),
+                    thoughtSignature));
         }
         return calls;
     }
@@ -383,6 +440,44 @@ public class OpenAiWireMapper {
             return text.toString();
         }
         return "";
+    }
+
+    private List<ContentPart> parseParts(JsonNode content) {
+        if (content == null || content.isMissingNode() || content.isNull()) {
+            return List.of();
+        }
+        if (content.isTextual()) {
+            return List.of(new ContentPart.Text(content.asText()));
+        }
+        if (!content.isArray()) {
+            return List.of();
+        }
+        List<ContentPart> parts = new ArrayList<>();
+        for (JsonNode part : content) {
+            if (part.isTextual()) {
+                parts.add(new ContentPart.Text(part.asText()));
+                continue;
+            }
+            String type = text(part.path("type"));
+            if ("text".equals(type)) {
+                parts.add(new ContentPart.Text(text(part.path("text"))));
+            } else if ("image_url".equals(type)) {
+                JsonNode image = part.path("image_url");
+                String url = image.isObject() ? text(image.path("url")) : text(image);
+                if (!url.isBlank()) {
+                    parts.add(ContentPart.Image.ofUrl(url, null));
+                }
+            } else if ("input_image".equals(type)) {
+                String url = text(part.path("image_url"));
+                if (url.isBlank()) {
+                    url = text(part.path("url"));
+                }
+                if (!url.isBlank()) {
+                    parts.add(ContentPart.Image.ofUrl(url, null));
+                }
+            }
+        }
+        return List.copyOf(parts);
     }
 
     private ObjectNode completionRoot(ChatResponse response, String requestedModel) {

@@ -3,13 +3,13 @@ package io.github.bangshou1st.modelbridge.server;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandle;
+import io.github.bangshou1st.modelbridge.core.config.ModelRouter;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
 import io.github.bangshou1st.modelbridge.core.model.EmbeddingResult;
-import io.github.bangshou1st.modelbridge.core.model.ProviderType;
 import io.github.bangshou1st.modelbridge.core.model.RerankResult;
 import io.github.bangshou1st.modelbridge.core.model.StreamChunk;
-import io.github.bangshou1st.modelbridge.core.protocol.ModelBridgeClient;
 import io.github.bangshou1st.modelbridge.core.security.ErrorCategory;
 import io.github.bangshou1st.modelbridge.core.security.ModelBridgeException;
 import io.micrometer.core.instrument.Timer;
@@ -28,20 +28,21 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 @RestController
 @RequestMapping("/v1")
 public class GatewayController {
     private final GatewayModelCatalog catalog;
-    private final ModelBridgeClient client;
+    private final ModelRouter router;
     private final OpenAiWireMapper wire;
     private final GatewayMetrics metrics;
     private final ObjectMapper mapper;
 
-    public GatewayController(GatewayModelCatalog catalog, ModelBridgeClient client,
+    public GatewayController(GatewayModelCatalog catalog, ModelRouter router,
                              OpenAiWireMapper wire, GatewayMetrics metrics, ObjectMapper mapper) {
         this.catalog = catalog;
-        this.client = client;
+        this.router = router;
         this.wire = wire;
         this.metrics = metrics;
         this.mapper = mapper;
@@ -57,12 +58,11 @@ public class GatewayController {
         OpenAiWireMapper.ParsedChat parsed = wire.parseChat(body);
         GatewayModelCatalog.ResolvedModel route = catalog.resolve(parsed.requestedModel());
         Timer.Sample sample = metrics.start();
-        ChatRequest upstreamRequest = parsed.request().withModel(route.model().getId());
         if (parsed.stream()) {
             return Mono.just(streamChat(parsed, route, sample));
         }
         return Mono.<ResponseEntity<?>>fromCallable(() -> {
-                    ChatResponse response = client.complete(route.provider(), upstreamRequest);
+                    ChatResponse response = router.chat(route.reference()).call(parsed.request());
                     metrics.success(sample, "chat", route.upstreamId());
                     return ResponseEntity.ok(wire.chatCompletion(response, parsed.requestedModel()));
                 })
@@ -77,14 +77,9 @@ public class GatewayController {
     public Mono<ResponseEntity<ObjectNode>> embeddings(@RequestBody JsonNode body) {
         var request = wire.parseEmbedding(body);
         GatewayModelCatalog.ResolvedModel route = catalog.resolve(request.model());
-        if (route.provider().type() != ProviderType.OPENAI_COMPATIBLE
-                && route.provider().type() != ProviderType.OLLAMA) {
-            throw GatewayException.badRequest("configured upstream does not support embeddings");
-        }
         Timer.Sample sample = metrics.start();
         return Mono.fromCallable(() -> {
-                    EmbeddingResult result = client.embed(route.provider(),
-                            request.withModel(route.model().getId()));
+                    EmbeddingResult result = router.embedding(route.reference()).embed(request);
                     metrics.success(sample, "embeddings", route.upstreamId());
                     return ResponseEntity.ok(wire.embeddingResponse(result, request.model()));
                 })
@@ -99,13 +94,9 @@ public class GatewayController {
     public Mono<ResponseEntity<ObjectNode>> rerank(@RequestBody JsonNode body) {
         var request = wire.parseRerank(body);
         GatewayModelCatalog.ResolvedModel route = catalog.resolve(request.model());
-        if (route.provider().type() != ProviderType.LLAMA_CPP) {
-            throw GatewayException.badRequest("configured upstream does not support llama.cpp rerank");
-        }
         Timer.Sample sample = metrics.start();
         return Mono.fromCallable(() -> {
-                    RerankResult result = client.rerank(route.provider(),
-                            request.withModel(route.model().getId()));
+                    RerankResult result = router.rerank(route.reference()).rerank(request);
                     metrics.success(sample, "rerank", route.upstreamId());
                     return ResponseEntity.ok(wire.rerankResponse(result, request.model()));
                 })
@@ -122,33 +113,53 @@ public class GatewayController {
             Timer.Sample sample) {
         String id = "chatcmpl-" + UUID.randomUUID();
         long created = Instant.now().getEpochSecond();
-        Flux<ServerSentEvent<String>> events = Flux.create(sink -> Schedulers.boundedElastic().schedule(() -> {
-            try {
-                if (sink.isCancelled()) {
-                    return;
+        Flux<ServerSentEvent<String>> events = Flux.create(sink -> {
+            if (sink.isCancelled()) {
+                return;
+            }
+            sink.next(event(wire.streamInitial(id, created, parsed.requestedModel())));
+            AtomicReference<StreamHandle> active = new AtomicReference<>();
+            sink.onCancel(() -> {
+                StreamHandle handle = active.get();
+                if (handle != null) {
+                    handle.cancel();
                 }
-                sink.next(event(wire.streamInitial(id, created, parsed.requestedModel())));
-                client.completeStream(route.provider(),
-                        parsed.request().withModel(route.model().getId()), chunk -> {
+            });
+            Schedulers.boundedElastic().schedule(() -> {
+                try {
                     if (sink.isCancelled()) {
                         return;
                     }
-                    ObjectNode payload = wire.streamChunk(chunk, id, created, parsed.requestedModel());
-                    sink.next(event(payload));
-                });
-                sink.next(event("[DONE]"));
-                metrics.success(sample, "chat.stream", route.upstreamId());
-                sink.complete();
-            } catch (Exception error) {
-                metrics.failure(sample, "chat.stream", route.upstreamId(), category(error));
-                if (!sink.isCancelled()) {
-                    sink.next(event(wire.error(streamErrorMessage(error),
-                            "api_error", streamErrorCode(error), retryable(error))));
+                    StreamHandle handle = router.chat(route.reference())
+                            .stream(parsed.request(), chunk -> {
+                                if (!sink.isCancelled()) {
+                                    sink.next(event(wire.streamChunk(chunk, id, created,
+                                            parsed.requestedModel())));
+                                }
+                            });
+                    active.set(handle);
+                    if (sink.isCancelled()) {
+                        handle.cancel();
+                        return;
+                    }
+                    handle.await();
+                    if (sink.isCancelled()) {
+                        return;
+                    }
                     sink.next(event("[DONE]"));
+                    metrics.success(sample, "chat.stream", route.upstreamId());
                     sink.complete();
+                } catch (Exception error) {
+                    metrics.failure(sample, "chat.stream", route.upstreamId(), category(error));
+                    if (!sink.isCancelled()) {
+                        sink.next(event(wire.error(streamErrorMessage(error),
+                                "api_error", streamErrorCode(error), retryable(error))));
+                        sink.next(event("[DONE]"));
+                        sink.complete();
+                    }
                 }
-            }
-        }));
+            });
+        });
         return ResponseEntity.ok()
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .cacheControl(CacheControl.noStore())

@@ -11,3 +11,4 @@ Thumbs.db
 *.local.yaml
 .flattened-pom.xml
 work/
+design/

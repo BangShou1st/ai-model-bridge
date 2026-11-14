@@ -21,16 +21,14 @@ management:
 ai:
   bridge:
     security:
-      allow-loopback: true
+      mode: public-https-only
+      allow-loopback: false
+      allow-loopback-in-production: false
       loopback-hosts:
         - 127.0.0.1
         - ::1
         - localhost
-      loopback-ports:
-        - 3425
-        - 8000
-        - 8001
-        - 11434
+      loopback-ports: []
     gateway:
       auth-enabled: true
       api-keys:

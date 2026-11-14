@@ -2,6 +2,7 @@ package io.github.bangshou1st.modelbridge.starter;
 
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
+import io.github.bangshou1st.modelbridge.core.security.NetworkPolicyMode;
 
 import java.util.Objects;
 
@@ -18,11 +19,14 @@ final class LoopbackAllowlistGuard {
     static void verify(Environment environment, ModelBridgeProperties properties) {
         Objects.requireNonNull(environment, "environment");
         Objects.requireNonNull(properties, "properties");
-        ModelBridgeProperties.Security security = properties.getSecurity();
-        if (!security.isAllowLoopback()) {
+        var security = properties.getSecurity();
+        boolean loopbackEnabled = security.isAllowLoopback()
+                || security.effectiveMode() == NetworkPolicyMode.ALLOW_LOOPBACK;
+        if (!loopbackEnabled) {
             return;
         }
-        if (!environment.acceptsProfiles(LOCAL_OR_TEST)) {
+        if (!security.isAllowLoopbackInProduction()
+                && !environment.acceptsProfiles(LOCAL_OR_TEST)) {
             throw new IllegalStateException(
                     "ai.bridge.security.allow-loopback requires an active local or test profile");
         }

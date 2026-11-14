@@ -8,6 +8,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.github.bangshou1st.modelbridge.core.http.HttpTransport;
+import io.github.bangshou1st.modelbridge.core.interceptor.StructuredOutputInterceptor;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
 import io.github.bangshou1st.modelbridge.core.model.FinishReason;
@@ -152,7 +153,8 @@ class OpenAiCompatibleAdapterTest {
                 .structuredOutput(StructuredOutput.jsonSchema("answer_schema", schema, true))
                 .build();
 
-        ChatResponse response = adapter.complete(provider, request);
+        ChatResponse response = new StructuredOutputInterceptor(mapper)
+                .intercept(request, current -> adapter.complete(provider, current));
 
         assertThat(response.content()).isEqualTo("{\"answer\":\"ok\"}");
         assertThat(response.metadata()).containsEntry("structuredOutputFallback", true);
@@ -166,7 +168,7 @@ class OpenAiCompatibleAdapterTest {
     }
 
     @Test
-    void lengthFailureCarriesUsage() throws Exception {
+    void lengthIsARegularTerminalResponse() throws Exception {
         start(exchange -> respond(exchange, 200, "application/json", """
                 {
                   "model":"upstream-model",
@@ -180,13 +182,38 @@ class OpenAiCompatibleAdapterTest {
                 """));
 
         ChatRequest request = ChatRequest.builder("request-model").user("write more").build();
-        assertThatThrownBy(() -> adapter.complete(provider, request))
-                .isInstanceOfSatisfying(ModelBridgeException.class, failure -> {
-                    assertThat(failure.category()).isEqualTo(ErrorCategory.LENGTH);
-                    assertThat(failure.retryable()).isFalse();
-                    assertThat(failure.usage().inputTokens()).isEqualTo(12);
-                    assertThat(failure.usage().outputTokens()).isEqualTo(99);
-                });
+        ChatResponse response = adapter.complete(provider, request);
+
+        assertThat(response.finishReason()).isEqualTo(FinishReason.LENGTH);
+        assertThat(response.content()).isEqualTo("partial");
+        assertThat(response.usage().inputTokens()).isEqualTo(12);
+        assertThat(response.usage().outputTokens()).isEqualTo(99);
+    }
+
+    @Test
+    void streamedLengthKeepsUsageFromTheTrailingUsageFrame() throws Exception {
+        start(exchange -> {
+            String lengthFrame = """
+                    {"model":"stream-model","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"length"}]}
+                    """.strip();
+            String usageFrame = """
+                    {"model":"stream-model","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":99,"total_tokens":111}}
+                    """.strip();
+            sse(exchange, "data: " + lengthFrame + "\n\n"
+                    + "data: " + usageFrame + "\n\n"
+                    + "data: [DONE]\n\n");
+        });
+
+        List<StreamChunk> chunks = new ArrayList<>();
+        adapter.completeStream(provider,
+                ChatRequest.builder("request-model").user("long").maxOutputTokens(99).build(),
+                chunks::add);
+
+        StreamChunk done = chunks.getLast();
+        assertThat(done.type()).isEqualTo(StreamChunk.Type.DONE);
+        assertThat(done.finishReason()).isEqualTo(FinishReason.LENGTH);
+        assertThat(done.usage().inputTokens()).isEqualTo(12);
+        assertThat(done.usage().outputTokens()).isEqualTo(99);
     }
 
     @Test

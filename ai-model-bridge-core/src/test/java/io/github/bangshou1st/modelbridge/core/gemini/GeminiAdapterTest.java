@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.bangshou1st.modelbridge.core.http.HttpTransport;
+import io.github.bangshou1st.modelbridge.core.interceptor.StructuredOutputInterceptor;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
 import io.github.bangshou1st.modelbridge.core.model.FinishReason;
@@ -36,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -162,6 +164,69 @@ class GeminiAdapterTest {
     }
 
     @Test
+    void backfillsToolNameFromAssistantToolCallWhenOpenAiStyleToolMessageOmitsIt()
+            throws Exception {
+        start(exchange -> sendJson(exchange, 200, """
+                {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],
+                 "usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1}}
+                """));
+
+        adapter().complete(provider(), ChatRequest.builder("gemini-test")
+                .messages(List.of(
+                        Message.user("look it up"),
+                        Message.assistant("", List.of(new ToolCall(
+                                "call-1", "lookup", mapper.readTree("{\"q\":\"x\"}"), "sig"))),
+                        Message.tool("call-1", "", mapper.readTree("{\"ok\":true}")),
+                        Message.user("continue")))
+                .build());
+
+        JsonNode functionResponse = mapper.readTree(captured.body())
+                .path("contents").path(2).path("parts").path(0).path("functionResponse");
+        assertThat(functionResponse.path("name").asText()).isEqualTo("lookup");
+    }
+
+    @Test
+    void structuredOutputFallsBackOnceThroughTheSharedInterceptor() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        List<JsonNode> bodies = new ArrayList<>();
+        start(exchange -> {
+            bodies.add(mapper.readTree(captured.body()));
+            if (attempts.getAndIncrement() == 0) {
+                sendJson(exchange, 200, """
+                        {"candidates":[{"content":{"parts":[{"text":"not json"}]},
+                         "finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,
+                         "candidatesTokenCount":2}}
+                        """);
+            } else {
+                sendJson(exchange, 200, """
+                        {"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]},
+                         "finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,
+                         "candidatesTokenCount":3}}
+                        """);
+            }
+        });
+
+        JsonNode schema = mapper.readTree("""
+                {"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}
+                """);
+        ChatRequest request = ChatRequest.builder("gemini-test")
+                .user("return json")
+                .structuredOutput(StructuredOutput.jsonSchema("result", schema, true))
+                .build();
+
+        ChatResponse response = new StructuredOutputInterceptor(mapper)
+                .intercept(request, current -> adapter().complete(provider(), current));
+
+        assertThat(attempts).hasValue(2);
+        assertThat(response.metadata()).containsEntry("structuredOutputFallback", true);
+        assertThat(bodies.get(0).path("generationConfig").path("responseMimeType").asText())
+                .isEqualTo("application/json");
+        assertThat(bodies.get(1).path("generationConfig").has("responseMimeType")).isFalse();
+        assertThat(bodies.get(1).path("systemInstruction").path("parts").path(0)
+                .path("text").asText()).contains("JSON schema");
+    }
+
+    @Test
     void streamEmitsTextFunctionCallsAndDone() throws Exception {
         start(exchange -> {
             exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
@@ -190,17 +255,15 @@ class GeminiAdapterTest {
     }
 
     @Test
-    void lengthCarriesUsageAndTurnIdsAreScoped() throws Exception {
+    void lengthIsARegularTerminalResponseAndTurnIdsAreScoped() throws Exception {
         start(exchange -> sendJson(exchange, 200, """
                 {"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"MAX_TOKENS"}],
                  "usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":9}}
                 """));
-        assertThatThrownBy(() -> adapter().complete(provider(),
-                ChatRequest.builder("gemini-test").user("long").build()))
-                .isInstanceOfSatisfying(ModelBridgeException.class, error -> {
-                    assertThat(error.category()).isEqualTo(ErrorCategory.LENGTH);
-                    assertThat(error.usage().outputTokens()).isEqualTo(9);
-                });
+        ChatResponse response = adapter().complete(provider(),
+                ChatRequest.builder("gemini-test").user("long").build());
+        assertThat(response.finishReason()).isEqualTo(FinishReason.LENGTH);
+        assertThat(response.usage().outputTokens()).isEqualTo(9);
 
         stopServer();
         start(exchange -> sendJson(exchange, 200, """

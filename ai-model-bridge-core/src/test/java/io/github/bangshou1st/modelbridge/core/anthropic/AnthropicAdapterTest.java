@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.bangshou1st.modelbridge.core.http.HttpTransport;
+import io.github.bangshou1st.modelbridge.core.interceptor.StructuredOutputInterceptor;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
 import io.github.bangshou1st.modelbridge.core.model.Message;
@@ -31,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -144,6 +146,70 @@ class AnthropicAdapterTest {
     }
 
     @Test
+    void reasoningAndPromptJsonUseAnthropicCompatibleWireFields() throws Exception {
+        start(exchange -> sendJson(exchange, 200, """
+                {"model":"claude-json","content":[{"type":"text","text":"{\\"ok\\":true}"}],
+                 "stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4}}
+                """));
+
+        JsonNode schema = mapper.readTree("""
+                {"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}
+                """);
+        adapter(provider()).complete(provider(), ChatRequest.builder("claude-json")
+                .user("return json")
+                .reasoning(new ReasoningOptions("high", 512, true))
+                .structuredOutput(io.github.bangshou1st.modelbridge.core.model.StructuredOutput
+                        .promptJson("result", schema))
+                .build());
+
+        JsonNode body = mapper.readTree(captured.body());
+        assertThat(body.path("thinking").path("type").asText()).isEqualTo("enabled");
+        assertThat(body.path("thinking").path("budget_tokens").asInt()).isEqualTo(512);
+        assertThat(body.has("output_config")).isFalse();
+        assertThat(body.path("system").asText()).contains("JSON Schema").contains("\"ok\"");
+    }
+
+    @Test
+    void structuredOutputFallsBackOnceThroughTheSharedInterceptor() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        List<JsonNode> bodies = new ArrayList<>();
+        start(exchange -> {
+            bodies.add(mapper.readTree(captured.body()));
+            if (attempts.getAndIncrement() == 0) {
+                sendJson(exchange, 200, """
+                        {"model":"claude-json","content":[{"type":"text","text":"not json"}],
+                         "stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":2}}
+                        """);
+            } else {
+                sendJson(exchange, 200, """
+                        {"model":"claude-json","content":[{"type":"text","text":"{\\"ok\\":true}"}],
+                         "stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":3}}
+                        """);
+            }
+        });
+
+        JsonNode schema = mapper.readTree("""
+                {"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}
+                """);
+        ChatRequest request = ChatRequest.builder("claude-json")
+                .user("return json")
+                .structuredOutput(io.github.bangshou1st.modelbridge.core.model.StructuredOutput
+                        .jsonSchema("result", schema, true))
+                .build();
+
+        ChatResponse response = new StructuredOutputInterceptor(mapper)
+                .intercept(request, current -> adapter(provider()).complete(provider(), current));
+
+        assertThat(attempts).hasValue(2);
+        assertThat(response.metadata()).containsEntry("structuredOutputFallback", true);
+        assertThat(bodies.get(0).path("output_config").path("format").path("type").asText())
+                .isEqualTo("json_schema");
+        assertThat(bodies.get(1).has("output_config")).isFalse();
+        assertThat(bodies.get(1).path("system").asText())
+                .contains("JSON Schema").contains("\"ok\"");
+    }
+
+    @Test
     void streamReassemblesTextAndToolArgumentsAcrossFrames() throws Exception {
         start(exchange -> {
             exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
@@ -182,7 +248,7 @@ class AnthropicAdapterTest {
     }
 
     @Test
-    void lengthCarriesUsageAnd429IsClassified() throws Exception {
+    void lengthIsARegularTerminalResponseAnd429IsClassified() throws Exception {
         start(exchange -> sendJson(exchange, 200, """
                 {
                   "model":"claude-truncated",
@@ -192,13 +258,11 @@ class AnthropicAdapterTest {
                 }
                 """));
 
-        assertThatThrownBy(() -> adapter(provider()).complete(provider(),
-                ChatRequest.builder("claude-truncated").user("long").build()))
-                .isInstanceOfSatisfying(ModelBridgeException.class, error -> {
-                    assertThat(error.category()).isEqualTo(ErrorCategory.LENGTH);
-                    assertThat(error.usage().outputTokens()).isEqualTo(9);
-                    assertThat(error.retryable()).isFalse();
-                });
+        ChatResponse response = adapter(provider()).complete(provider(),
+                ChatRequest.builder("claude-truncated").user("long").build());
+        assertThat(response.finishReason())
+                .isEqualTo(io.github.bangshou1st.modelbridge.core.model.FinishReason.LENGTH);
+        assertThat(response.usage().outputTokens()).isEqualTo(9);
 
         stopServer();
         start(exchange -> {

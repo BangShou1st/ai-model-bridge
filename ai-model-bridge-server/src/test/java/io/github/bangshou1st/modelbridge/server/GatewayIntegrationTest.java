@@ -12,11 +12,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.MediaType;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.EntityExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
@@ -26,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -61,17 +65,52 @@ class GatewayIntegrationTest {
         registry.add("ai.bridge.gateway.upstreams.mock.models[1].alias", () -> "tools");
         registry.add("ai.bridge.gateway.upstreams.mock.models[2].id", () -> "embed-model");
         registry.add("ai.bridge.gateway.upstreams.mock.models[2].alias", () -> "embed");
+        registry.add("ai.bridge.gateway.upstreams.mock.models[2].supports-embeddings", () -> true);
+        registry.add("ai.bridge.gateway.upstreams.mock.models[2].supports-streaming", () -> false);
+        registry.add("ai.bridge.gateway.upstreams.mock.models[2].supports-structured-output", () -> false);
         registry.add("ai.bridge.gateway.upstreams.mock.models[3].id", () -> "fail-chat");
         registry.add("ai.bridge.gateway.upstreams.mock.models[3].alias", () -> "failing");
         registry.add("ai.bridge.gateway.upstreams.mock.models[4].id", () -> "timeout-chat");
         registry.add("ai.bridge.gateway.upstreams.mock.models[4].alias", () -> "timing-out");
+        registry.add("ai.bridge.gateway.upstreams.mock.models[5].id", () -> "slow-stream");
+        registry.add("ai.bridge.gateway.upstreams.mock.models[5].alias", () -> "slow");
+        registry.add("ai.bridge.gateway.upstreams.mock.models[6].id", () -> "shared-model");
+        registry.add("ai.bridge.gateway.upstreams.mock.models[7].id", () -> "shadow-model");
 
         registry.add("ai.bridge.gateway.upstreams.mock-rerank.type", () -> "llama-cpp");
         registry.add("ai.bridge.gateway.upstreams.mock-rerank.base-url",
                 () -> "http://127.0.0.1:" + UPSTREAM.port());
         registry.add("ai.bridge.gateway.upstreams.mock-rerank.models[0].id", () -> "rerank-model");
         registry.add("ai.bridge.gateway.upstreams.mock-rerank.models[0].alias", () -> "rerank");
+        registry.add("ai.bridge.gateway.upstreams.mock-rerank.models[0].supports-rerank", () -> true);
+        registry.add("ai.bridge.gateway.upstreams.mock-rerank.models[0].supports-streaming", () -> false);
+        registry.add("ai.bridge.gateway.upstreams.mock-rerank.models[0].supports-structured-output", () -> false);
+
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.type", () -> "gemini");
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.base-url",
+                () -> "http://127.0.0.1:" + UPSTREAM.port() + "/gemini");
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.models[0].id",
+                () -> "gemini-embedding-001");
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.models[0].alias",
+                () -> "gemini-embed");
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.models[0].supports-embeddings",
+                () -> true);
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.models[0].supports-streaming",
+                () -> false);
+        registry.add("ai.bridge.gateway.upstreams.gemini-embed.models[0].supports-structured-output",
+                () -> false);
         registry.add("ai.bridge.gateway.aliases.smart", () -> "mock/mock-chat");
+
+        registry.add("ai.bridge.providers.core.protocol", () -> "openai-compatible");
+        registry.add("ai.bridge.providers.core.base-url",
+                () -> "http://127.0.0.1:" + UPSTREAM.port() + "/v1");
+        registry.add("ai.bridge.providers.core.api-key", () -> "core-secret");
+        registry.add("ai.bridge.providers.core.models[0].id", () -> "core-chat");
+        registry.add("ai.bridge.providers.core.models[0].alias", () -> "core-fast");
+        registry.add("ai.bridge.providers.core.models[1].id", () -> "shared-model");
+        registry.add("ai.bridge.providers.core.models[2].id", () -> "aliased-model");
+        registry.add("ai.bridge.providers.core.models[2].alias", () -> "shadow-model");
+        registry.add("ai.bridge.aliases.unified[0]", () -> "core/core-chat");
     }
 
     @LocalServerPort
@@ -106,7 +145,7 @@ class GatewayIntegrationTest {
     }
 
     @Test
-    void listsMagpieStyleMetadataAndAliases() {
+    void listsRichMetadataAndAliases() {
         JsonNode response = http.get().uri("/v1/models")
                 .header("Authorization", "Bearer test-key")
                 .exchange()
@@ -122,6 +161,12 @@ class GatewayIntegrationTest {
         assertThat(fast.path("pricing").path("prompt").asText()).isEqualTo("0.000001");
         assertThat(fast.path("supported_parameters").toString()).contains("tools");
         assertThat(find(response.path("data"), "smart")).isNotNull();
+        JsonNode embedding = find(response.path("data"), "embed");
+        assertThat(embedding.path("supports_embeddings").asBoolean()).isTrue();
+        assertThat(embedding.path("native_endpoints").toString()).contains("/v1/embeddings");
+        assertThat(find(response.path("data"), "rerank").path("supports_rerank").asBoolean())
+                .isTrue();
+        assertThat(find(response.path("data"), "unified")).isNotNull();
     }
 
     @Test
@@ -144,6 +189,83 @@ class GatewayIntegrationTest {
         JsonNode upstream = JSON.readTree(UPSTREAM.lastChatBody.get());
         assertThat(upstream.path("model").asText()).isEqualTo("mock-chat");
         assertThat(UPSTREAM.lastChatAuthorization.get()).isEqualTo("Bearer upstream-secret");
+    }
+
+    @Test
+    void routesCoreDeclarativeProviderAndAliasThroughSameGateway() throws Exception {
+        http.post().uri("/v1/chat/completions")
+                .header("Authorization", "Bearer test-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of(
+                        "model", "unified",
+                        "messages", List.of(Map.of("role", "user", "content", "hello"))))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.model").isEqualTo("unified")
+                .jsonPath("$.choices[0].message.content").isEqualTo("upstream answer");
+
+        JsonNode upstream = JSON.readTree(UPSTREAM.lastChatBody.get());
+        assertThat(upstream.path("model").asText()).isEqualTo("core-chat");
+        assertThat(UPSTREAM.lastChatAuthorization.get()).isEqualTo("Bearer core-secret");
+    }
+
+    @Test
+    void modelCatalogExposesRoutableProviderQualifiedIdsForConflicts() throws Exception {
+        JsonNode response = http.get().uri("/v1/models")
+                .header("Authorization", "Bearer test-key")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(JsonNode.class)
+                .returnResult().getResponseBody();
+
+        assertThat(find(response.path("data"), "mock/shared-model")).isNotNull();
+        assertThat(find(response.path("data"), "core/shared-model")).isNotNull();
+        assertThat(find(response.path("data"), "shared-model")).isNull();
+        assertThat(find(response.path("data"), "shadow-model").path("provider").asText())
+                .isEqualTo("core");
+        assertThat(find(response.path("data"), "mock/shadow-model").path("provider").asText())
+                .isEqualTo("mock");
+
+        chat("mock/shared-model")
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.choices[0].message.content").isEqualTo("upstream answer");
+        assertThat(JSON.readTree(UPSTREAM.lastChatBody.get()).path("model").asText())
+                .isEqualTo("shared-model");
+        assertThat(UPSTREAM.lastChatAuthorization.get()).isEqualTo("Bearer upstream-secret");
+
+        chat("core/shared-model")
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.choices[0].message.content").isEqualTo("upstream answer");
+        assertThat(JSON.readTree(UPSTREAM.lastChatBody.get()).path("model").asText())
+                .isEqualTo("shared-model");
+        assertThat(UPSTREAM.lastChatAuthorization.get()).isEqualTo("Bearer core-secret");
+
+        chat("shadow-model")
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.model").isEqualTo("shadow-model");
+        assertThat(JSON.readTree(UPSTREAM.lastChatBody.get()).path("model").asText())
+                .isEqualTo("aliased-model");
+        assertThat(UPSTREAM.lastChatAuthorization.get()).isEqualTo("Bearer core-secret");
+
+        chat("mock/shadow-model")
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.model").isEqualTo("mock/shadow-model");
+        assertThat(JSON.readTree(UPSTREAM.lastChatBody.get()).path("model").asText())
+                .isEqualTo("shadow-model");
+        assertThat(UPSTREAM.lastChatAuthorization.get()).isEqualTo("Bearer upstream-secret");
+
+        chat("shared-model")
+                .expectStatus().isNotFound()
+                .expectBody()
+                .jsonPath("$.error.code").isEqualTo("model_not_found")
+                .jsonPath("$.error.message").value(message -> assertThat(String.valueOf(message))
+                        .contains("ambiguous model id")
+                        .contains("provider/model"));
     }
 
     @Test
@@ -215,6 +337,55 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    void proxiesGeminiEmbeddingsThroughTheUnifiedRouter() {
+        http.post().uri("/v1/embeddings")
+                .header("Authorization", "Bearer test-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of("model", "gemini-embed", "input", "gemini input"))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.object").isEqualTo("list")
+                .jsonPath("$.data.length()").isEqualTo(1)
+                .jsonPath("$.data[0].embedding[0]").isEqualTo(0.5);
+    }
+
+    @Test
+    void clientCancellationClosesTheUpstreamStream() {
+        WebClient client = WebClient.builder()
+                .baseUrl("http://127.0.0.1:" + port)
+                .defaultHeader("Authorization", "Bearer test-key")
+                .build();
+        List<ServerSentEvent<String>> events = client.post()
+                .uri("/v1/chat/completions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .bodyValue(Map.of(
+                        "model", "slow",
+                        "stream", true,
+                        "messages", List.of(Map.of("role", "user", "content", "stream"))))
+                .retrieve()
+                .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {
+                })
+                .takeUntil(event -> event.data() != null
+                        && event.data().contains("\"content\":\"tick\""))
+                .collectList()
+                .block(Duration.ofSeconds(5));
+
+        assertThat(events).isNotNull();
+        long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (!UPSTREAM.slowStreamCancelled.get() && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        assertThat(UPSTREAM.slowStreamCancelled).isTrue();
+    }
+
+    @Test
     void rerankRequestsAllCandidatesAndHonorsTopN() {
         http.post().uri("/v1/rerank")
                 .header("Authorization", "Bearer test-key")
@@ -275,12 +446,23 @@ class GatewayIntegrationTest {
         return null;
     }
 
+    private WebTestClient.ResponseSpec chat(String model) {
+        return http.post().uri("/v1/chat/completions")
+                .header("Authorization", "Bearer test-key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of(
+                        "model", model,
+                        "messages", List.of(Map.of("role", "user", "content", "hello"))))
+                .exchange();
+    }
+
     private static final class Upstream implements AutoCloseable {
         private final HttpServer server;
         private final ObjectMapper mapper = new ObjectMapper();
         private final AtomicReference<String> lastChatBody = new AtomicReference<>("");
         private final AtomicReference<String> lastChatAuthorization = new AtomicReference<>();
         private final AtomicInteger lastRerankTopN = new AtomicInteger();
+        private final AtomicBoolean slowStreamCancelled = new AtomicBoolean();
 
         private Upstream(HttpServer server) {
             this.server = server;
@@ -293,6 +475,8 @@ class GatewayIntegrationTest {
                 server.createContext("/v1/chat/completions", upstream::chat);
                 server.createContext("/v1/embeddings", upstream::embeddings);
                 server.createContext("/v1/rerank", upstream::rerank);
+                server.createContext("/gemini/v1beta/models/gemini-embedding-001:batchEmbedContents",
+                        upstream::geminiEmbeddings);
                 server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
                 server.start();
                 return upstream;
@@ -309,6 +493,7 @@ class GatewayIntegrationTest {
             lastChatBody.set("");
             lastChatAuthorization.set(null);
             lastRerankTopN.set(0);
+            slowStreamCancelled.set(false);
         }
 
         private void chat(HttpExchange exchange) throws IOException {
@@ -360,6 +545,20 @@ class GatewayIntegrationTest {
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
             exchange.sendResponseHeaders(200, 0);
             try (OutputStream output = exchange.getResponseBody()) {
+                if ("slow-stream".equals(model)) {
+                    try {
+                        for (int frame = 0; frame < 500; frame++) {
+                            writeEvent(output, """
+                                    {"id":"chatcmpl-up","object":"chat.completion.chunk","model":"slow-stream",
+                                     "choices":[{"index":0,"finish_reason":null,"delta":{"content":"tick"}}]}
+                                    """);
+                            pause();
+                        }
+                    } catch (IOException cancelled) {
+                        slowStreamCancelled.set(true);
+                    }
+                    return;
+                }
                 if ("tool-chat".equals(model)) {
                     writeEvent(output, """
                             {"id":"chatcmpl-up","object":"chat.completion.chunk","model":"tool-chat",
@@ -430,6 +629,17 @@ class GatewayIntegrationTest {
             }
             writeJson(exchange, 200, "{\"model\":\"rerank-model\",\"results\":[" + results
                     + "],\"usage\":{\"prompt_tokens\":4,\"total_tokens\":4}}");
+        }
+
+        private void geminiEmbeddings(HttpExchange exchange) throws IOException {
+            JsonNode request = mapper.readTree(exchange.getRequestBody());
+            int count = request.path("requests").isArray() ? request.path("requests").size() : 1;
+            StringBuilder values = new StringBuilder();
+            for (int index = 0; index < count; index++) {
+                if (index > 0) values.append(',');
+                values.append("{\"values\":[0.5,0.25]}");
+            }
+            writeJson(exchange, 200, "{\"embeddings\":[" + values + "]}");
         }
 
         private static void writeEvent(OutputStream output, String json) throws IOException {

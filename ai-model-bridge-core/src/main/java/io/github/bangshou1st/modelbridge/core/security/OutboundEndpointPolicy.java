@@ -1,5 +1,6 @@
 package io.github.bangshou1st.modelbridge.core.security;
 
+import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
@@ -13,12 +14,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * SSRF boundary for model endpoints.
- *
- * <p>The policy resolves the complete DNS answer before a request, rejects mixed public/private
- * answers (the DNS-rebinding shape), rejects metadata/private/link-local destinations, disables
- * redirects at the HTTP layer, and only accepts insecure loopback HTTP when the host and port are
- * explicitly whitelisted. The resolved address set is returned as a pin for the transport.</p>
+ * SSRF boundary for model endpoints. DNS is resolved completely before a request and redirects are
+ * disabled by the transport. Cloud metadata destinations can never be enabled by a policy mode.
  */
 public final class OutboundEndpointPolicy {
     private static final Set<String> BLOCKED_HOST_NAMES = Set.of(
@@ -37,22 +34,40 @@ public final class OutboundEndpointPolicy {
             "fd00:ec2::254"
     );
 
+    private final NetworkPolicyMode mode;
     private final boolean allowLoopback;
     private final Set<String> loopbackHosts;
     private final Set<Integer> loopbackPorts;
     private final DnsResolver dnsResolver;
 
     public OutboundEndpointPolicy() {
-        this(false, Set.of(), Set.of(), InetAddress::getAllByName);
+        this(NetworkPolicyMode.PUBLIC_HTTPS_ONLY, false, Set.of(), Set.of(),
+                InetAddress::getAllByName);
     }
 
     public OutboundEndpointPolicy(boolean allowLoopback, Set<String> loopbackHosts,
                                   Set<Integer> loopbackPorts) {
-        this(allowLoopback, loopbackHosts, loopbackPorts, InetAddress::getAllByName);
+        this(allowLoopback ? NetworkPolicyMode.ALLOW_LOOPBACK
+                        : NetworkPolicyMode.PUBLIC_HTTPS_ONLY,
+                allowLoopback, loopbackHosts, loopbackPorts, InetAddress::getAllByName);
     }
 
     public OutboundEndpointPolicy(boolean allowLoopback, Set<String> loopbackHosts,
                                   Set<Integer> loopbackPorts, DnsResolver dnsResolver) {
+        this(allowLoopback ? NetworkPolicyMode.ALLOW_LOOPBACK
+                        : NetworkPolicyMode.PUBLIC_HTTPS_ONLY,
+                allowLoopback, loopbackHosts, loopbackPorts, dnsResolver);
+    }
+
+    public OutboundEndpointPolicy(NetworkPolicyMode mode, boolean allowLoopback,
+                                  Set<String> loopbackHosts, Set<Integer> loopbackPorts) {
+        this(mode, allowLoopback, loopbackHosts, loopbackPorts, InetAddress::getAllByName);
+    }
+
+    public OutboundEndpointPolicy(NetworkPolicyMode mode, boolean allowLoopback,
+                                  Set<String> loopbackHosts, Set<Integer> loopbackPorts,
+                                  DnsResolver dnsResolver) {
+        this.mode = mode == null ? NetworkPolicyMode.PUBLIC_HTTPS_ONLY : mode;
         this.allowLoopback = allowLoopback;
         this.loopbackHosts = normalizeHosts(loopbackHosts);
         this.loopbackPorts = loopbackPorts == null ? Set.of() : Set.copyOf(loopbackPorts);
@@ -64,7 +79,19 @@ public final class OutboundEndpointPolicy {
     }
 
     public static OutboundEndpointPolicy localDevelopment(Set<Integer> ports) {
-        return new OutboundEndpointPolicy(true, Set.of("127.0.0.1", "::1", "localhost"), ports);
+        return new OutboundEndpointPolicy(NetworkPolicyMode.ALLOW_LOOPBACK, true,
+                Set.of("127.0.0.1", "::1", "localhost"), ports);
+    }
+
+    public static OutboundEndpointPolicy privateNetwork(boolean allowLoopback,
+                                                        Set<String> loopbackHosts,
+                                                        Set<Integer> loopbackPorts) {
+        return new OutboundEndpointPolicy(NetworkPolicyMode.ALLOW_PRIVATE_NETWORK, allowLoopback,
+                loopbackHosts, loopbackPorts);
+    }
+
+    public NetworkPolicyMode mode() {
+        return mode;
     }
 
     public PinnedEndpoint validate(URI uri) {
@@ -76,7 +103,7 @@ public final class OutboundEndpointPolicy {
         if (!"https".equals(scheme) && !"http".equals(scheme)) {
             throw ModelBridgeException.networkPolicy("only HTTP(S) model endpoints are allowed");
         }
-        String host = lower(uri.getHost());
+        String host = normalizeHost(lower(uri.getHost()));
         if (host == null || host.isBlank()) {
             throw ModelBridgeException.networkPolicy("endpoint host is missing");
         }
@@ -95,26 +122,51 @@ public final class OutboundEndpointPolicy {
             throw ModelBridgeException.networkPolicy("model endpoint resolved to no address");
         }
 
-        boolean loopbackRequest = isLoopbackHost(host, addresses);
-        if (loopbackRequest) {
-            if (!allowLoopback || !loopbackHosts.contains(host) || !loopbackPorts.isEmpty()
-                    && !loopbackPorts.contains(effectivePort(uri))) {
-                throw ModelBridgeException.networkPolicy("loopback endpoint is not whitelisted");
+        // Metadata protection is checked before any mode-specific exemption.
+        for (InetAddress address : addresses) {
+            if (isCloudMetadata(address)) {
+                throw ModelBridgeException.networkPolicy("cloud metadata endpoint is blocked");
             }
-        } else if ("http".equals(scheme)) {
-            throw ModelBridgeException.networkPolicy("public model endpoints must use HTTPS");
         }
 
-        List<InetAddress> pinned = new ArrayList<>();
-        for (InetAddress address : addresses) {
-            if (isBlocked(address) && !(loopbackRequest && address.isLoopbackAddress())) {
-                throw ModelBridgeException.networkPolicy("private, link-local or metadata address is blocked");
-            }
-            if (loopbackRequest != address.isLoopbackAddress()) {
-                throw ModelBridgeException.networkPolicy("mixed public and loopback DNS answers are blocked");
-            }
-            pinned.add(address);
+        boolean anyLoopback = addresses.stream().anyMatch(InetAddress::isLoopbackAddress);
+        boolean allLoopback = addresses.stream().allMatch(InetAddress::isLoopbackAddress);
+        boolean loopbackRequest = "localhost".equals(host) || allLoopback;
+        if (anyLoopback && !allLoopback) {
+            throw ModelBridgeException.networkPolicy("mixed public and loopback DNS answers are blocked");
         }
+
+        if (loopbackRequest) {
+            if (!allLoopback) {
+                throw ModelBridgeException.networkPolicy(
+                        "loopback host did not resolve exclusively to loopback addresses");
+            }
+            if (mode == NetworkPolicyMode.PUBLIC_HTTPS_ONLY || !allowLoopback
+                    || !loopbackHosts.contains(host)
+                    || (!loopbackPorts.isEmpty() && !loopbackPorts.contains(effectivePort(uri)))) {
+                throw ModelBridgeException.networkPolicy("loopback endpoint is not whitelisted");
+            }
+        } else {
+            boolean anyPrivate = addresses.stream().anyMatch(OutboundEndpointPolicy::isPrivate);
+            if (mode == NetworkPolicyMode.PUBLIC_HTTPS_ONLY && anyPrivate) {
+                throw ModelBridgeException.networkPolicy(
+                        "private, link-local or metadata address is blocked");
+            }
+            if (mode == NetworkPolicyMode.ALLOW_LOOPBACK && anyPrivate) {
+                throw ModelBridgeException.networkPolicy(
+                        "private network endpoints require ALLOW_PRIVATE_NETWORK mode");
+            }
+            if ("http".equals(scheme) && mode != NetworkPolicyMode.ALLOW_PRIVATE_NETWORK) {
+                throw ModelBridgeException.networkPolicy("public model endpoints must use HTTPS");
+            }
+            if ("http".equals(scheme) && addresses.stream().anyMatch(
+                    address -> !isPrivate(address))) {
+                throw ModelBridgeException.networkPolicy(
+                        "insecure HTTP is only allowed for private network endpoints");
+            }
+        }
+
+        List<InetAddress> pinned = new ArrayList<>(addresses);
         return new PinnedEndpoint(uri, host, pinned, pinned.getFirst());
     }
 
@@ -126,16 +178,9 @@ public final class OutboundEndpointPolicy {
         }
     }
 
-    private static boolean isLoopbackHost(String host, List<InetAddress> addresses) {
-        return "localhost".equals(host) || addresses.stream().allMatch(InetAddress::isLoopbackAddress);
-    }
-
-    private static boolean isBlocked(InetAddress address) {
-        if (address.isAnyLocalAddress() || address.isMulticastAddress()
+    private static boolean isPrivate(InetAddress address) {
+        if (address.isAnyLocalAddress() || address.isLoopbackAddress()
                 || address.isLinkLocalAddress() || address.isSiteLocalAddress()) {
-            return true;
-        }
-        if (address.isLoopbackAddress()) {
             return true;
         }
         byte[] bytes = address.getAddress();
@@ -148,15 +193,40 @@ public final class OutboundEndpointPolicy {
             if (first == 192 && second == 0) return true;
             if (first == 198 && (second == 18 || second == 19)) return true;
             if (first >= 224) return true;
-        } else if (address instanceof Inet6Address) {
+            return false;
+        }
+        if (address instanceof Inet6Address) {
             int first = bytes[0] & 0xff;
             if ((first & 0xfe) == 0xfc) return true; // unique-local fc00::/7
             if (bytes[0] == (byte) 0xff) return true;
             if (isIpv4Mapped(bytes)) {
-                return true;
+                try {
+                    return isPrivate(InetAddress.getByAddress(
+                            Arrays.copyOfRange(bytes, 12, 16)));
+                } catch (UnknownHostException ignored) {
+                    return true;
+                }
             }
         }
-        return CLOUD_METADATA_ADDRESSES.contains(address.getHostAddress());
+        return false;
+    }
+
+    private static boolean isCloudMetadata(InetAddress address) {
+        String value = address.getHostAddress().toLowerCase(Locale.ROOT);
+        if (CLOUD_METADATA_ADDRESSES.contains(value)) {
+            return true;
+        }
+        byte[] bytes = address.getAddress();
+        if (bytes.length == 16 && isIpv4Mapped(bytes)) {
+            try {
+                return CLOUD_METADATA_ADDRESSES.contains(
+                        InetAddress.getByAddress(Arrays.copyOfRange(bytes, 12, 16))
+                                .getHostAddress());
+            } catch (UnknownHostException ignored) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private static boolean isIpv4Mapped(byte[] bytes) {
@@ -178,9 +248,16 @@ public final class OutboundEndpointPolicy {
             return Set.of();
         }
         Set<String> normalized = new LinkedHashSet<>();
-        hosts.forEach(host -> normalized.add(host == null ? "" : host.toLowerCase(Locale.ROOT)
-                .replace("[", "").replace("]", "")));
+        hosts.forEach(host -> normalized.add(normalizeHost(host)));
         return Set.copyOf(normalized);
+    }
+
+    private static String normalizeHost(String host) {
+        if (host == null) {
+            return "";
+        }
+        String value = host.toLowerCase(Locale.ROOT).replace("[", "").replace("]", "");
+        return value.endsWith(".") ? value.substring(0, value.length() - 1) : value;
     }
 
     private static String lower(String value) {

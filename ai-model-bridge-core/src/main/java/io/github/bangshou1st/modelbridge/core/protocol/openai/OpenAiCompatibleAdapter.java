@@ -1,19 +1,21 @@
 package io.github.bangshou1st.modelbridge.core.protocol.openai;
 
 import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.bangshou1st.modelbridge.core.http.Endpoints;
 import io.github.bangshou1st.modelbridge.core.http.HttpTransport;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandle;
+import io.github.bangshou1st.modelbridge.core.client.StreamHandles;
+import io.github.bangshou1st.modelbridge.core.model.ChatOptions;
 import io.github.bangshou1st.modelbridge.core.model.ChatRequest;
 import io.github.bangshou1st.modelbridge.core.model.ChatResponse;
+import io.github.bangshou1st.modelbridge.core.model.ContentPart;
 import io.github.bangshou1st.modelbridge.core.model.FinishReason;
 import io.github.bangshou1st.modelbridge.core.model.Message;
 import io.github.bangshou1st.modelbridge.core.model.ProviderConfig;
-import io.github.bangshou1st.modelbridge.core.model.ProviderType;
 import io.github.bangshou1st.modelbridge.core.model.ReasoningOptions;
 import io.github.bangshou1st.modelbridge.core.model.Role;
 import io.github.bangshou1st.modelbridge.core.model.StreamChunk;
@@ -23,10 +25,8 @@ import io.github.bangshou1st.modelbridge.core.model.ToolCall;
 import io.github.bangshou1st.modelbridge.core.model.ToolCallDelta;
 import io.github.bangshou1st.modelbridge.core.model.ToolChoice;
 import io.github.bangshou1st.modelbridge.core.model.ToolDefinition;
-import io.github.bangshou1st.modelbridge.core.model.TurnRequest;
-import io.github.bangshou1st.modelbridge.core.model.TurnResult;
 import io.github.bangshou1st.modelbridge.core.protocol.ChatProtocolAdapter;
-import io.github.bangshou1st.modelbridge.core.security.ErrorCategory;
+import io.github.bangshou1st.modelbridge.core.protocol.ProtocolId;
 import io.github.bangshou1st.modelbridge.core.security.ModelBridgeException;
 
 import java.util.ArrayList;
@@ -53,57 +53,31 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
     }
 
     @Override
-    public Set<ProviderType> providerTypes() {
-        return Set.of(ProviderType.OPENAI_COMPATIBLE);
+    public Set<ProtocolId> protocols() {
+        return Set.of(ProtocolId.OPENAI_COMPATIBLE);
     }
 
     @Override
     public ChatResponse complete(ProviderConfig provider, ChatRequest request) {
         long started = System.nanoTime();
-        StructuredOutput structured = request.structuredOutput();
-        boolean fallbackAllowed = structured.enabled()
-                && structured.mode() != StructuredOutput.Mode.PROMPT_JSON
-                && structured.fallbackToPromptJson();
-        try {
-            ChatResponse response = completeOnce(provider, request, structured, started);
-            validateStructuredOutput(response, structured, provider);
-            return withFallbackMetadata(response, false);
-        } catch (ModelBridgeException failure) {
-            if (fallbackAllowed && fallbackable(failure)) {
-                return completePromptFallback(provider, request, structured, started);
-            }
-            if (structured.enabled() && failure.category() == ErrorCategory.INVALID_RESPONSE) {
-                throw ModelBridgeException.schema("structured output was not valid JSON", provider.id());
-            }
-            throw failure;
-        } catch (InvalidStructuredOutput invalid) {
-            if (fallbackAllowed) {
-                return completePromptFallback(provider, request, structured, started);
-            }
-            throw ModelBridgeException.schema(invalid.getMessage(), provider.id());
-        }
+        return completeOnce(provider, request, request.structuredOutput(), started);
     }
 
-    private ChatResponse completePromptFallback(ProviderConfig provider, ChatRequest request,
-                                                StructuredOutput structured, long started) {
-        StructuredOutput promptMode = promptMode(structured);
-        try {
-            ChatResponse fallback = completeOnce(provider, request, promptMode, started);
-            validateStructuredOutput(fallback, promptMode, provider);
-            return withFallbackMetadata(fallback, true);
-        } catch (InvalidStructuredOutput invalid) {
-            throw ModelBridgeException.schema(invalid.getMessage(), provider.id());
-        } catch (ModelBridgeException failure) {
-            if (failure.category() == ErrorCategory.INVALID_RESPONSE) {
-                throw ModelBridgeException.schema("structured output was not valid JSON", provider.id());
-            }
-            throw failure;
-        }
+    @Override
+    public StreamHandle stream(ProviderConfig provider, ChatRequest request,
+                               Consumer<StreamChunk> consumer) {
+        return StreamHandles.start(StreamHandles.sharedExecutor(),
+                handle -> completeStreamInternal(provider, request, consumer, handle));
     }
 
     @Override
     public void completeStream(ProviderConfig provider, ChatRequest request,
                                Consumer<StreamChunk> consumer) {
+        stream(provider, request, consumer).await();
+    }
+
+    private void completeStreamInternal(ProviderConfig provider, ChatRequest request,
+                                        Consumer<StreamChunk> consumer, StreamHandle handle) {
         ObjectNode body = streamBody(request);
         StreamState state = new StreamState(request.model());
         http.postSse(provider, endpoint(provider), headers(provider), body, event -> {
@@ -166,12 +140,12 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
             String finish = choice.path("finish_reason").asText("");
             if (!finish.isEmpty()) {
                 state.finishReason = finishReason(finish);
-                if (state.finishReason == FinishReason.LENGTH) {
-                    throw ModelBridgeException.truncated(provider.id(), state.usage);
-                }
             }
-        });
+        }, handle);
 
+        if (handle.isCancelled()) {
+            return;
+        }
         if (!state.sawChoice) {
             throw ModelBridgeException.invalidResponse(
                     "stream returned no choices", provider.id(), state.usage);
@@ -186,39 +160,11 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
                     "stream returned neither text nor tool calls", provider.id(), state.usage);
         }
         validateStreamToolCalls(state, provider);
-        if (state.finishReason == FinishReason.LENGTH) {
-            throw ModelBridgeException.truncated(provider.id(), state.usage);
-        }
         if (!state.doneEmitted) {
             state.doneEmitted = true;
             consumer.accept(StreamChunk.done(
                     state.finishReason, state.usage, state.model, provider.id()));
         }
-    }
-
-    @Override
-    public TurnResult turn(ProviderConfig provider, TurnRequest request) {
-        long started = System.nanoTime();
-        JsonNode response = http.postJson(provider, endpoint(provider), headers(provider),
-                turnBody(request));
-        JsonNode choice = response.path("choices").path(0);
-        if (!choice.isObject()) {
-            throw ModelBridgeException.invalidResponse("missing choices[0]", provider.id(), null);
-        }
-        TokenUsage usage = usage(response.path("usage"));
-        FinishReason finish = finishReason(choice.path("finish_reason").asText(""));
-        if (finish == FinishReason.LENGTH) {
-            throw ModelBridgeException.truncated(provider.id(), usage);
-        }
-        JsonNode message = choice.path("message");
-        String content = text(message.path("content"));
-        List<ToolCall> calls = toolCalls(message.path("tool_calls"), provider, usage);
-        if (content.isBlank() && calls.isEmpty()) {
-            throw ModelBridgeException.invalidResponse(
-                    "model returned neither text nor tool calls", provider.id(), usage);
-        }
-        return new TurnResult(content, calls, finish, usage, provider.id(),
-                response.path("model").asText(request.model()), elapsedMs(started));
     }
 
     private ChatResponse completeOnce(ProviderConfig provider, ChatRequest request,
@@ -237,9 +183,6 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
         JsonNode message = choice.path("message");
         TokenUsage usage = usage(response.path("usage"));
         FinishReason finish = finishReason(choice.path("finish_reason").asText(""));
-        if (finish == FinishReason.LENGTH) {
-            throw ModelBridgeException.truncated(provider.id(), usage);
-        }
         String content = text(message.path("content"));
         String reasoning = text(message.path("reasoning_content"));
         if (reasoning.isEmpty()) {
@@ -251,6 +194,7 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
                     "model returned neither text nor tool calls", provider.id(), usage);
         }
         Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("structuredOutputFallback", false);
         if (structured.enabled()) {
             metadata.put("structuredOutputMode", structured.mode().name());
         }
@@ -260,47 +204,37 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
     }
 
     private ObjectNode chatBody(ChatRequest request, StructuredOutput structured) {
-        ObjectNode body = baseBody(request.model(), request.temperature(),
-                request.maxOutputTokens(), false);
+        ObjectNode body = baseBody(request, false);
         addMessages(body.putArray("messages"), request.messages(), promptInstruction(structured));
         addTools(body, request.tools(), request.toolChoice());
-        addStructuredOutput(body, structured);
-        addExtensions(body, request.providerOptions(), request.reasoning());
+        addStructuredOutput(body, structured, request.options().strictJsonSchema());
+        addExtensions(body, request);
         return body;
     }
 
     private ObjectNode streamBody(ChatRequest request) {
-        ObjectNode body = baseBody(request.model(), request.temperature(),
-                request.maxOutputTokens(), true);
+        ObjectNode body = baseBody(request, true);
         addMessages(body.putArray("messages"), request.messages(),
                 promptInstruction(request.structuredOutput()));
         addTools(body, request.tools(), request.toolChoice());
-        addStructuredOutput(body, request.structuredOutput());
-        addExtensions(body, request.providerOptions(), request.reasoning());
+        addStructuredOutput(body, request.structuredOutput(),
+                request.options().strictJsonSchema());
+        addExtensions(body, request);
         return body;
     }
 
-    private ObjectNode turnBody(TurnRequest request) {
-        ObjectNode body = baseBody(request.model(), request.temperature(),
-                request.maxOutputTokens(), false);
-        addMessages(body.putArray("messages"), request.messages(), null);
-        addTools(body, request.tools(), request.toolChoice());
-        addExtensions(body, request.providerOptions(), request.reasoning());
-        return body;
-    }
-
-    private ObjectNode baseBody(String model, Double temperature, Integer maxOutputTokens,
-                                boolean stream) {
+    private ObjectNode baseBody(ChatRequest request, boolean stream) {
+        ChatOptions options = request.options();
         ObjectNode body = mapper.createObjectNode();
-        body.put("model", model);
-        if (temperature != null) {
-            body.put("temperature", temperature);
+        body.put("model", request.model());
+        if (options.temperature() != null) {
+            body.put("temperature", options.temperature());
         }
-        if (maxOutputTokens != null) {
-            body.put("max_tokens", maxOutputTokens);
+        if (options.maxOutputTokens() != null) {
+            body.put("max_tokens", options.maxOutputTokens());
         }
         body.put("stream", stream);
-        if (stream) {
+        if (stream && options.includeStreamUsage()) {
             body.putObject("stream_options").put("include_usage", true);
         }
         return body;
@@ -312,20 +246,24 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
         }
         for (Message message : source) {
             switch (message.role()) {
-                case SYSTEM, USER -> messages.addObject()
-                        .put("role", message.role() == Role.SYSTEM ? "system" : "user")
-                        .put("content", message.content());
+                case SYSTEM, USER -> {
+                    ObjectNode node = messages.addObject()
+                            .put("role", message.role() == Role.SYSTEM ? "system" : "user");
+                    addContent(node, message, false);
+                }
                 case ASSISTANT -> {
                     ObjectNode node = messages.addObject().put("role", "assistant");
-                    if (!message.content().isEmpty()) {
-                        node.put("content", message.content());
-                    }
+                    addContent(node, message, true);
                     if (!message.toolCalls().isEmpty()) {
                         ArrayNode calls = node.putArray("tool_calls");
                         for (ToolCall call : message.toolCalls()) {
                             ObjectNode item = calls.addObject()
                                     .put("id", call.id())
                                     .put("type", "function");
+                            if (call.thoughtSignature() != null
+                                    && !call.thoughtSignature().isBlank()) {
+                                item.put("thought_signature", call.thoughtSignature());
+                            }
                             ObjectNode function = item.putObject("function");
                             function.put("name", call.name());
                             function.put("arguments", call.arguments().toString());
@@ -343,6 +281,47 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
                     node.put("content", message.toolResult() == null
                             ? message.content() : message.toolResult().toString());
                 }
+            }
+        }
+    }
+
+    private void addContent(ObjectNode target, Message message, boolean assistant) {
+        List<ContentPart> parts = message.parts();
+        List<ContentPart> renderable = parts.stream()
+                .filter(part -> part instanceof ContentPart.Image
+                        || (part instanceof ContentPart.Text text && !text.text().isEmpty()))
+                .toList();
+        if (renderable.isEmpty()) {
+            if (!assistant && !message.content().isEmpty()) {
+                target.put("content", message.content());
+            }
+        } else if (renderable.size() == 1 && renderable.getFirst() instanceof ContentPart.Text text) {
+            target.put("content", text.text());
+        } else {
+            ArrayNode content = target.putArray("content");
+            for (ContentPart part : renderable) {
+                if (part instanceof ContentPart.Text text) {
+                    content.addObject().put("type", "text").put("text", text.text());
+                } else if (part instanceof ContentPart.Image image) {
+                    ObjectNode item = content.addObject().put("type", "image_url");
+                    String url = image.url();
+                    if (url == null || url.isBlank()) {
+                        String mediaType = image.mediaType() == null
+                                ? "image/png" : image.mediaType();
+                        url = "data:" + mediaType + ";base64," + image.base64Data();
+                    }
+                    item.putObject("image_url").put("url", url);
+                }
+            }
+        }
+        if (assistant) {
+            String reasoning = message.parts().stream()
+                    .filter(ContentPart.Thinking.class::isInstance)
+                    .map(ContentPart.Thinking.class::cast)
+                    .map(ContentPart.Thinking::text)
+                    .collect(java.util.stream.Collectors.joining());
+            if (!reasoning.isEmpty()) {
+                target.put("reasoning_content", reasoning);
             }
         }
     }
@@ -366,7 +345,8 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
         });
     }
 
-    private void addStructuredOutput(ObjectNode body, StructuredOutput structured) {
+    private void addStructuredOutput(ObjectNode body, StructuredOutput structured,
+                                     boolean strictJsonSchema) {
         if (structured == null || !structured.enabled()) {
             return;
         }
@@ -378,7 +358,7 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
                 ObjectNode value = format.putObject("json_schema");
                 value.put("name", structured.name() == null || structured.name().isBlank()
                         ? "response" : structured.name());
-                value.put("strict", true);
+                value.put("strict", strictJsonSchema);
                 value.set("schema", structured.schema());
             }
             case NONE, PROMPT_JSON -> {
@@ -387,9 +367,31 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
         }
     }
 
-    private void addExtensions(ObjectNode body, Map<String, Object> options,
-                               ReasoningOptions reasoning) {
-        Map<String, Object> safeOptions = options == null ? Map.of() : options;
+    private void addExtensions(ObjectNode body, ChatRequest request) {
+        ChatOptions options = request.options();
+        Map<String, Object> safeOptions = request.providerOptions();
+        if (options.topP() != null) body.put("top_p", options.topP());
+        if (!options.stop().isEmpty()) body.set("stop", mapper.valueToTree(options.stop()));
+        if (options.seed() != null) body.put("seed", options.seed());
+        if (options.frequencyPenalty() != null) {
+            body.put("frequency_penalty", options.frequencyPenalty());
+        }
+        if (options.presencePenalty() != null) {
+            body.put("presence_penalty", options.presencePenalty());
+        }
+        for (String key : List.of("top_p", "stop", "seed", "frequency_penalty",
+                "presence_penalty", "enable_thinking", "reasoning_effort")) {
+            Object value = safeOptions.get(key);
+            if (value != null && !body.has(key)) {
+                body.set(key, mapper.valueToTree(value));
+            }
+        }
+        options.extraBody().forEach((key, value) -> {
+            if (!isReservedBodyKey(key) && !body.has(key)) {
+                body.set(key, mapper.valueToTree(value));
+            }
+        });
+        ReasoningOptions reasoning = request.reasoning();
         Object thinkingOption = safeOptions.get("enable_thinking");
         if (thinkingOption instanceof Boolean enabled) {
             body.put("enable_thinking", enabled);
@@ -405,6 +407,14 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
         }
     }
 
+    private static boolean isReservedBodyKey(String key) {
+        return switch (key == null ? "" : key.toLowerCase()) {
+            case "model", "messages", "stream", "stream_options", "tools", "tool_choice",
+                    "response_format", "max_tokens", "max_completion_tokens", "input" -> true;
+            default -> false;
+        };
+    }
+
     private static String promptInstruction(StructuredOutput structured) {
         if (structured == null || !structured.enabled()
                 || structured.mode() != StructuredOutput.Mode.PROMPT_JSON) {
@@ -415,110 +425,6 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
                     + "The value must satisfy this JSON Schema:\n" + structured.schema();
         }
         return "Return only one valid JSON object, with no Markdown fences or explanatory text.";
-    }
-
-    private void validateStructuredOutput(ChatResponse response, StructuredOutput structured,
-                                          ProviderConfig provider) {
-        if (structured == null || !structured.enabled()) {
-            return;
-        }
-        JsonNode value;
-        try {
-            value = mapper.reader()
-                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-                    .readTree(response.content());
-        } catch (Exception e) {
-            throw new InvalidStructuredOutput("structured output is not valid JSON");
-        }
-        if (value == null || value.isMissingNode()) {
-            throw new InvalidStructuredOutput("structured output is empty");
-        }
-        if (structured.schema() != null) {
-            validateSchema(value, structured.schema(), "$", provider);
-        } else if (structured.mode() == StructuredOutput.Mode.JSON_OBJECT && !value.isObject()) {
-            throw ModelBridgeException.schema(
-                    "JSON_OBJECT response is not an object", provider.id());
-        }
-    }
-
-    private void validateSchema(JsonNode value, JsonNode schema, String path,
-                                ProviderConfig provider) {
-        if (schema == null || schema.isMissingNode() || schema.isNull()) {
-            return;
-        }
-        String type = schema.path("type").asText("");
-        if (!type.isEmpty() && !typeMatches(value, type)) {
-            throw ModelBridgeException.schema(
-                    "structured output violates schema at " + path, provider.id());
-        }
-        JsonNode required = schema.path("required");
-        if (required.isArray() && value.isObject()) {
-            for (JsonNode field : required) {
-                if (!value.has(field.asText())) {
-                    throw ModelBridgeException.schema(
-                            "structured output is missing required field " + path + "."
-                                    + field.asText(), provider.id());
-                }
-            }
-        }
-        JsonNode properties = schema.path("properties");
-        if (properties.isObject() && value.isObject()) {
-            properties.fields().forEachRemaining(entry -> {
-                JsonNode child = value.get(entry.getKey());
-                if (child != null) {
-                    validateSchema(child, entry.getValue(), path + "." + entry.getKey(), provider);
-                }
-            });
-        }
-        JsonNode enumValues = schema.path("enum");
-        if (enumValues.isArray() && !enumValues.isEmpty()) {
-            boolean matched = false;
-            for (JsonNode allowed : enumValues) {
-                if (allowed.equals(value)) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                throw ModelBridgeException.schema(
-                        "structured output violates enum at " + path, provider.id());
-            }
-        }
-    }
-
-    private static boolean typeMatches(JsonNode value, String type) {
-        return switch (type) {
-            case "object" -> value.isObject();
-            case "array" -> value.isArray();
-            case "string" -> value.isTextual();
-            case "boolean" -> value.isBoolean();
-            case "integer" -> value.isIntegralNumber();
-            case "number" -> value.isNumber();
-            case "null" -> value.isNull();
-            default -> true;
-        };
-    }
-
-    private static StructuredOutput promptMode(StructuredOutput source) {
-        return new StructuredOutput(StructuredOutput.Mode.PROMPT_JSON,
-                source.name(), source.schema(), false);
-    }
-
-    private static boolean fallbackable(ModelBridgeException failure) {
-        if (failure.category() == ErrorCategory.BAD_REQUEST) {
-            return failure.upstreamStatus() == 400 || failure.upstreamStatus() == 404
-                    || failure.upstreamStatus() == 422;
-        }
-        return failure.category() == ErrorCategory.SCHEMA
-                || failure.category() == ErrorCategory.INVALID_RESPONSE;
-    }
-
-    private static ChatResponse withFallbackMetadata(ChatResponse response, boolean fallback) {
-        Map<String, Object> metadata = new LinkedHashMap<>(response.metadata());
-        metadata.put("structuredOutputFallback", fallback);
-        return new ChatResponse(response.content(), response.reasoningContent(),
-                response.toolCalls(), response.finishReason(), response.usage(),
-                response.provider(), response.model(), response.latencyMs(), metadata);
     }
 
     private JsonNode parseEvent(String data, ProviderConfig provider) {
@@ -555,7 +461,12 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
             }
             JsonNode arguments = strictObject(
                     item.path("function").path("arguments"), provider, usage);
-            calls.add(new ToolCall(id, name, arguments));
+            String signature = text(item.path("thought_signature"));
+            if (signature.isEmpty()) {
+                signature = text(item.path("thoughtSignature"));
+            }
+            calls.add(new ToolCall(id, name, arguments,
+                    signature.isEmpty() ? null : signature));
         }
         return calls;
     }
@@ -706,9 +617,4 @@ public final class OpenAiCompatibleAdapter implements ChatProtocolAdapter {
         }
     }
 
-    private static final class InvalidStructuredOutput extends RuntimeException {
-        private InvalidStructuredOutput(String message) {
-            super(message);
-        }
-    }
 }
