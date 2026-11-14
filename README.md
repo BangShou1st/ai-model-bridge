@@ -1,36 +1,189 @@
-# ai-model-bridge
+<div align="center">
 
-一个面向 Java 21 的通用模型接入库，以及一个可选的 OpenAI 兼容网关。
+# AI Model Bridge
 
-- 核心库不依赖 Spring，只依赖 Jackson 与 JDK `HttpClient`。
-- 统一 OpenAI-compatible、Anthropic、Gemini、Ollama 和 llama.cpp 的协议差异。
-- 提供 Chat、SSE 流式、原生 Tool Calling、Embedding、Rerank、模型发现与能力探针。
-- 内置 SSRF 防护、统一错误分类、密钥/提示词日志脱敏和请求超时。
-- 可选 Spring Boot Starter 仅做自动装配，不包含数据库、JPA、Flyway 或任何业务表。
-- 可选 Server 暴露 `/v1/models`、`/v1/chat/completions`、`/v1/embeddings`、`/v1/rerank`。
+### 统一模型协议、流式输出与工具调用的 Java 接入层
 
-模型目录的线格式参考 Magpie 的 `/v1/models` 实践，包括
-`context_window`、`max_output_tokens`、`reasoning_levels`、
-`supported_parameters`、OpenRouter 风格 `pricing` 与 `native_endpoints`。
-本项目不包含 Magpie、OpenCode Zen、Kilo Gateway 或任何业务项目代码。
+<p>
+  <a href="https://github.com/BangShou1st/ai-model-bridge/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/BangShou1st/ai-model-bridge/ci.yml?branch=main&label=CI&logo=github&style=flat-square" alt="CI" />
+  </a>
+  <a href="https://jitpack.io/#BangShou1st/ai-model-bridge">
+    <img src="https://jitpack.io/v/BangShou1st/ai-model-bridge.svg?style=flat-square" alt="JitPack" />
+  </a>
+  <a href="https://github.com/BangShou1st/ai-model-bridge/releases">
+    <img src="https://img.shields.io/github/v/release/BangShou1st/ai-model-bridge?style=flat-square" alt="Release" />
+  </a>
+  <img src="https://img.shields.io/badge/Java-21-orange?logo=openjdk&style=flat-square" alt="Java 21" />
+  <img src="https://img.shields.io/badge/Maven-3.9+-C71A36?logo=apachemaven&style=flat-square" alt="Maven 3.9+" />
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.4%2B%20%7C%204.x-6DB33F?logo=springboot&style=flat-square" alt="Spring Boot" />
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square" alt="Apache 2.0" />
+</p>
 
-## 模块
+<p>
+  <img src="https://img.shields.io/badge/OpenAI-compatible-10A37F?style=flat-square" alt="OpenAI-compatible" />
+  <img src="https://img.shields.io/badge/Anthropic-Messages-D97757?style=flat-square" alt="Anthropic" />
+  <img src="https://img.shields.io/badge/Google-Gemini-4285F4?style=flat-square" alt="Gemini" />
+  <img src="https://img.shields.io/badge/Ollama-Embeddings-black?style=flat-square" alt="Ollama" />
+  <img src="https://img.shields.io/badge/llama.cpp-Rerank-6E7B8B?style=flat-square" alt="llama.cpp" />
+</p>
 
-| 模块 | 用途 |
+<p>
+  <b>一个 Spring-free 核心 + 一个 Spring Boot Starter + 一个可选 OpenAI 兼容网关</b><br />
+  <sub>Chat · Native Tools · SSE · Structured Output · Embedding · Rerank · Discovery · Capability Probe</sub>
+</p>
+
+<p>
+  <a href="#-为什么需要-ai-model-bridge">项目定位</a> ·
+  <a href="#-模块结构">模块结构</a> ·
+  <a href="#-架构">架构</a> ·
+  <a href="#-快速开始">快速开始</a> ·
+  <a href="#-可选网关">可选网关</a> ·
+  <a href="#-安全模型">安全模型</a> ·
+  <a href="#-测试与发布">测试与发布</a>
+</p>
+
+</div>
+
+---
+
+> [!TIP]
+> **v0.1.0** 已提供 JitPack 多模块坐标。核心库零 Spring 依赖；Starter 同时面向 Spring Boot 3.4+ 与 4.x；Server 可直接作为 Magpie、OpenAI、Anthropic、Gemini、Ollama、llama.cpp 的统一接入面。
+
+## 🌉 为什么需要 AI Model Bridge
+
+接入多个模型供应商时，业务代码通常会被这些差异污染：
+
+- OpenAI、Anthropic、Gemini 的消息结构、工具调用、流式事件和错误语义完全不同。
+- `reasoning_effort`、`enable_thinking`、`thinkingBudget` 等参数散落在各家私有字段里。
+- 结构化输出失败后缺少可控降级，超长输出又经常丢失已经产生的 usage。
+- 模型目录只有 `id`，没有 context window、reasoning levels、tools、pricing 等决策信息。
+- 自建网关容易在 SSRF、DNS rebinding、日志泄露和上游 429/504 处理上留下安全债务。
+- 直接引入 Spring、数据库或业务概念，会让“模型接入层”无法被其他项目复用。
+
+**AI Model Bridge** 把这些能力收敛为一套 Java 21 契约：
+
+| 目标 | 实现 |
 | --- | --- |
-| `ai-model-bridge-core` | 契约、协议适配器、模型发现、能力探针、安全与可观测性；零 Spring 依赖 |
-| `ai-model-bridge-spring-boot-starter` | `@ConfigurationProperties("ai.bridge")`、环回白名单守卫和 `@ConditionalOnMissingBean` 自动装配 |
-| `ai-model-bridge-server` | 可选 OpenAI 兼容网关，多上游/别名路由、虚拟网关鉴权、Micrometer 指标 |
+| 业务不感知供应商 | 统一 `ChatRequest`、`TurnRequest`、`StreamChunk`、`EmbeddingRequest`、`RerankRequest` |
+| 协议可插拔 | `AdapterRegistry` + `BridgePlugin` SPI |
+| 安全默认开启 | HTTPS 强校验、DNS 答案整体校验、私网/元数据拦截、受控 loopback 白名单 |
+| 可观测且不泄密 | 统一错误分类、retryable、LENGTH usage、日志脱敏 |
+| 可选而非强绑定 | Core 零 Spring；Starter 只做自动装配；Server 是完全独立进程 |
 
-要求：
+模型目录线格式参考 [Magpie](https://github.com/yetone/magpie) 的 `/v1/models` 实践，
+包括 `context_window`、`max_output_tokens`、`reasoning_levels`、
+`supported_parameters`、OpenRouter 风格 `pricing` 与 `native_endpoints`。
+本项目不包含 Magpie 源码、OpenCode Zen、Kilo Gateway 或任何业务项目代码。
 
-- Java 21+
-- Maven 3.9+
-- 消费端 Spring Boot 3.4+ 或 4.x（Starter 只使用稳定自动装配 API）
+## 📦 模块结构
 
-## JitPack
+```mermaid
+flowchart LR
+    App["业务应用"] --> Starter["ai-model-bridge-spring-boot-starter"]
+    App --> Core["ai-model-bridge-core"]
+    Gateway["ai-model-bridge-server"] --> Starter
+    Starter --> Core
+    Core --> P1["OpenAI-compatible"]
+    Core --> P2["Anthropic"]
+    Core --> P3["Gemini"]
+    Core --> P4["Ollama / llama.cpp"]
+```
 
-先在 Maven 或 Gradle 中加入 JitPack：
+| 模块 | 关键内容 | 依赖边界 |
+| --- | --- | --- |
+| `ai-model-bridge-core` | 统一契约、四个协议适配器、模型发现、能力探针、安全、错误模型 | 仅 Jackson + SLF4J + JDK `HttpClient` |
+| `ai-model-bridge-spring-boot-starter` | `@ConfigurationProperties("ai.bridge")`、环回守卫、`@ConditionalOnMissingBean` | 无数据库 / JPA / Flyway / User / Project |
+| `ai-model-bridge-server` | `/v1/models`、Chat + SSE + tools、Embeddings、Rerank、别名路由、网关鉴权、Micrometer | 可选独立网关 |
+
+要求：**Java 21+**、**Maven 3.9+**、消费端 **Spring Boot 3.4+ / 4.x**。
+
+## 🧭 架构
+
+```mermaid
+flowchart TB
+    subgraph Client["调用方"]
+        S1["Java Service"]
+        S2["OpenAI SDK / CLI"]
+    end
+
+    subgraph Library["Spring-free Core"]
+        C1["Chat / Turn / Stream / Embedding / Rerank contracts"]
+        C2["AdapterRegistry + BridgePlugin"]
+        C3["HttpTransport + SSE Parser"]
+        C4["OutboundEndpointPolicy"]
+        C5["ModelDiscoveryClient"]
+        C6["CapabilityProber"]
+        C1 --> C2
+        C2 --> C3
+        C3 --> C4
+        C5 --> C3
+        C6 --> C2
+    end
+
+    subgraph Gateway["Optional Gateway"]
+        G1["Bearer Auth"]
+        G2["Alias / Upstream Router"]
+        G3["OpenAI Wire Mapper"]
+        G4["Micrometer"]
+        G1 --> G2 --> G3
+        G4 -.-> G2
+    end
+
+    S1 --> Library
+    S2 --> Gateway
+    Gateway --> Library
+
+    C2 --> U1["OpenAI-compatible"]
+    C2 --> U2["Anthropic"]
+    C2 --> U3["Gemini"]
+    C2 --> U4["Ollama"]
+    C2 --> U5["llama.cpp"]
+```
+
+### 四阶能力探针
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant Prober as CapabilityProber
+    participant Core as ModelBridgeClient
+    participant Upstream
+
+    App->>Prober: probe(provider, model)
+    Prober->>Upstream: CONNECTIVITY / models
+    Prober->>Core: STREAMING / completeStream
+    Core->>Upstream: SSE
+    Prober->>Core: STRUCTURED_OUTPUT / JSON Schema
+    Core->>Upstream: structured request
+    Prober->>Core: NATIVE_TOOLS / required tool
+    Core->>Upstream: tools
+    Prober-->>App: CapabilityReport
+```
+
+## ✨ 能力矩阵
+
+| 能力 | OpenAI-compatible | Anthropic | Gemini | Ollama | llama.cpp |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| Chat complete | ✅ | ✅ | ✅ | ✅ via OpenAI | — |
+| SSE streaming | ✅ | ✅ | ✅ | ✅ via OpenAI | — |
+| Native tools | ✅ | ✅ | ✅ | ✅ via OpenAI | — |
+| Structured output | ✅ + fallback | ✅ prompt JSON | ✅ | ✅ prompt JSON | — |
+| Embedding | ✅ | — | — | ✅ | — |
+| Rerank | — | — | — | — | ✅ |
+| Model discovery | ✅ + Magpie | ✅ | ✅ | ✅ | ✅ |
+
+补充能力：
+
+- **OpenAI-compatible**：`STRUCTURED_OUTPUT` 失败自动降级一次 `PROMPT_JSON`；白名单扩展参数 `enable_thinking` / `reasoning_effort`；`LENGTH` 异常携带 usage。
+- **Anthropic**：`x-api-key` + `anthropic-version`，role 交替与 `tool_use` / `tool_result` 映射，流式工具参数分片。
+- **Gemini**：`x-goog-api-key`，`thinkingConfig` 的 budget/level 受控覆盖，`toolCallId` 按请求作用域归一化。
+- **Embedding**：OpenAI `/v1/embeddings`；Ollama `/api/embed` 与旧 `/api/embeddings` 兼容回退。
+- **Rerank**：llama.cpp；上游 `top_n` 始终为候选全量，验证索引完整、唯一、分数有限，结果包含模型调用耗时。
+
+## 🚀 快速开始
+
+### JitPack
 
 ```xml
 <repository>
@@ -46,8 +199,6 @@ repositories {
 }
 ```
 
-多模块 JitPack 坐标：
-
 ```xml
 <dependency>
     <groupId>com.github.BangShou1st.ai-model-bridge</groupId>
@@ -62,9 +213,9 @@ implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-bo
 ```
 
 JitPack 构建日志：
-`https://jitpack.io/com/github/BangShou1st/ai-model-bridge/v0.1.0/build.log`
+**[v0.1.0 build.log](https://jitpack.io/com/github/BangShou1st/ai-model-bridge/v0.1.0/build.log)**
 
-## 直接使用 Core
+### 直接调用 Core
 
 ```java
 ObjectMapper mapper = new ObjectMapper();
@@ -72,7 +223,9 @@ OutboundEndpointPolicy policy = OutboundEndpointPolicy.httpsOnly();
 ModelBridgeClient client = ModelBridgeClient.create(mapper, policy);
 
 ProviderConfig provider = ProviderConfig.openAiCompatible(
-        "upstream", "https://api.example.com/v1", System.getenv("MODEL_API_KEY"));
+        "upstream",
+        "https://api.example.com/v1",
+        System.getenv("MODEL_API_KEY"));
 
 ChatResponse response = client.complete(provider, ChatRequest.builder("model-id")
         .user("用一句话解释模型网关。")
@@ -116,11 +269,7 @@ TurnRequest turn = new TurnRequest(
 TurnResult result = client.turn(provider, turn);
 ```
 
-结构化输出会在适配器支持的条件下使用原生 `response_format` / `responseMimeType`；
-OpenAI-compatible 适配器在 `400`、`404`、`422` 或 JSON/schema 校验失败时，
-可对 `AUTO` 请求最多降级一次 `PROMPT_JSON`。
-
-## Spring Boot Starter
+### Spring Boot Starter
 
 ```xml
 <dependency>
@@ -130,13 +279,16 @@ OpenAI-compatible 适配器在 `400`、`404`、`422` 或 JSON/schema 校验失�
 </dependency>
 ```
 
-自动装配的 Bean：
+自动装配 Bean：
 
-- `OutboundEndpointPolicy`
-- `HttpTransport` 与 `AdapterRegistry`
-- `ModelBridgeClient`
-- `ModelDiscoveryClient`
-- `CapabilityProber`
+```text
+OutboundEndpointPolicy
+HttpTransport
+AdapterRegistry
+ModelBridgeClient
+ModelDiscoveryClient
+CapabilityProber
+```
 
 全部使用 `@ConditionalOnMissingBean`，应用可以替换任意一个 Bean。
 
@@ -147,25 +299,17 @@ ai:
     connect-timeout: 10s
     request-timeout: 2m
     security:
-      allow-loopback: true   # 仅 local/test profile 允许
-      loopback-hosts:
-        - 127.0.0.1
-        - ::1
-        - localhost
-      loopback-ports:
-        - 3425
+      allow-loopback: true   # 仅 local/test profile
+      loopback-hosts: [127.0.0.1, ::1, localhost]
+      loopback-ports: [3425]
 ```
 
-安全守卫：
+> [!WARNING]
+> 环回白名单不是生产环境的通用 SSRF 豁免。默认拒绝所有 loopback；开启时必须同时配置 host 与 port，并且仅在 `local` / `test` profile 下允许，否则应用启动失败。
 
-- 默认拒绝所有明文 loopback 地址。
-- `allow-loopback=true` 时必须有非空 host 和 port 白名单。
-- 只有激活 `local` 或 `test` profile 时才能开启；其他环境启动直接失败。
-- 使用自定义 `OutboundEndpointPolicy` 也仍然执行启动守卫。
+## 🛰️ 可选网关
 
-## 可选网关
-
-Server 读取 `ai.bridge.gateway.*`：
+Server 读取 `ai.bridge.gateway.*`，支持多上游、显式模型别名和全局别名：
 
 ```yaml
 ai:
@@ -173,7 +317,7 @@ ai:
     security:
       allow-loopback: true
       loopback-hosts: [127.0.0.1, localhost]
-      loopback-ports: [3425, 11434]
+      loopback-ports: [3425, 11434, 8080]
     gateway:
       auth-enabled: true
       api-keys:
@@ -222,18 +366,16 @@ $env:AI_BRIDGE_GATEWAY_API_KEY = "dev-secret"
 java -jar ai-model-bridge-server/target/ai-model-bridge-server-0.1.0.jar --spring.profiles.active=local
 ```
 
-端点：
+### API Surface
 
-```text
-GET  /v1/models
-POST /v1/chat/completions     # stream=true 时返回 SSE
-POST /v1/embeddings
-POST /v1/rerank
-GET  /actuator/health
-GET  /actuator/metrics
-```
-
-调用示例：
+| Method | Path | 说明 |
+| :--- | :--- | :--- |
+| `GET` | `/v1/models` | OpenAI / Magpie 风格丰富模型目录 |
+| `POST` | `/v1/chat/completions` | Chat、`stream=true` SSE、native tools |
+| `POST` | `/v1/embeddings` | OpenAI-compatible / Ollama |
+| `POST` | `/v1/rerank` | llama.cpp，结果携带耗时 |
+| `GET` | `/actuator/health` | 健康检查 |
+| `GET` | `/actuator/metrics` | Micrometer 指标 |
 
 ```bash
 curl http://127.0.0.1:8080/v1/models \
@@ -245,52 +387,112 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"fast","stream":true,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
-网关特性：
+网关保证：
 
 - 请求模型名可以是显式别名、全局别名或唯一模型 ID；发往上游时替换为真实模型 ID。
-- 流式响应输出 OpenAI `chat.completion.chunk`，支持 content、reasoning_content、tool_calls 分片和最终 usage。
-- `top_n` 只影响最终返回条数；发送给 llama.cpp 的上游 `top_n` 始终等于候选总数，并校验所有索引完整且唯一。
-- 虚拟网关使用 Bearer token 鉴权，认证失败不会访问上游。
-- Micrometer 指标：`ai.bridge.gateway.latency`（endpoint/provider/outcome）与
-  `ai.bridge.gateway.errors`（endpoint/provider/category）。
+- SSE 输出标准 `chat.completion.chunk`，支持 content、reasoning_content、tool_calls 分片和 usage。
+- 虚拟网关使用 Bearer token 鉴权，认证失败不访问上游。
+- `ai.bridge.gateway.latency` 与 `ai.bridge.gateway.errors` 带 endpoint/provider/category 标签。
 
-## 安全与错误模型
+### 模型元数据形态
 
-`OutboundEndpointPolicy`：
+```json
+{
+  "id": "hy4",
+  "object": "model",
+  "display_name": "Hy4",
+  "context_window": 960000,
+  "max_output_tokens": 64000,
+  "supports_tools": true,
+  "supports_reasoning": true,
+  "reasoning_levels": ["high"],
+  "supported_parameters": ["tools", "tool_choice", "reasoning"],
+  "pricing": {
+    "prompt": "0",
+    "completion": "0"
+  },
+  "native_endpoints": ["/v1/chat/completions"]
+}
+```
 
-- 公网只允许 HTTPS；禁止 URL userinfo、fragment 和重定向。
-- DNS 解析结果整体校验，任何私网、链路本地、CGNAT、云元数据或 mixed public/private
-  结果都会被拒绝，以阻断 DNS rebinding 形态。
-- 环回 HTTP 仅允许显式 host/port 白名单，且 Starter 额外限制为 `local` / `test`。
-- 返回 `PinnedEndpoint`，包含本次解析后的完整地址集合与选定连接地址。
+## 🔐 安全模型
 
-`ModelBridgeException` 统一分类：
+| 边界 | 行为 |
+| --- | --- |
+| 公网 endpoint | 只允许 HTTPS；禁止 userinfo、fragment 与自动重定向 |
+| DNS | 解析结果整体校验；任何私网、链路本地、CGNAT、云元数据或 mixed public/private 答案都拒绝 |
+| 环回 | 默认拒绝；显式 host + port 白名单；Starter 仅允许 `local` / `test` |
+| 日志 | 不打印 API Key、Authorization、Prompt 正文；只记录模型、消息数、字符数、状态、分类 |
+| 错误 | 上游响应正文不进入异常消息；统一映射为稳定分类 |
 
-- `AUTHENTICATION` / `AUTHORIZATION`
-- `RATE_LIMIT` / `UNAVAILABLE` / `TIMEOUT`
-- `LENGTH` / `SCHEMA` / `INVALID_RESPONSE`
-- `NETWORK_POLICY` / `UNSUPPORTED`
+### 错误分类
 
-`retryable` 随分类提供；`LENGTH` 异常携带已产生的 `TokenUsage`。
-日志只记录模型名、消息数量、字符数、错误分类和 HTTP 状态，不打印 API Key 或 Prompt 正文。
+| Category | 常见来源 | retryable |
+| :--- | :--- | :---: |
+| `AUTHENTICATION` | 401 | ❌ |
+| `AUTHORIZATION` | 403 | ❌ |
+| `RATE_LIMIT` | 429 | ✅ |
+| `UNAVAILABLE` | 5xx / 网络失败 | ✅ |
+| `TIMEOUT` | 408 / 504 / 本地超时 | ✅ |
+| `LENGTH` | `finish_reason=length` / `max_tokens` | ❌ |
+| `SCHEMA` | structured output / rerank 完整性失败 | ❌ |
+| `INVALID_RESPONSE` | 非法上游 JSON / SSE / 工具参数 | ❌ |
+| `NETWORK_POLICY` | SSRF / DNS rebinding / 非白名单环回 | ❌ |
 
-## 构建与测试
+`LENGTH` 异常通过 `usage()` 携带已经产生的 token 用量。
+
+## 🧪 测试与发布
 
 ```bash
 ./mvnw -B -ntp verify
 ```
 
-测试使用真实本地 JDK `HttpServer`，覆盖：
+测试矩阵：
 
-- 三个协议的请求转换、原生工具调用和 SSE 分片
-- structured output 降级、参数白名单、LENGTH usage
-- 429 / 504 分类
-- Embedding 完整性、Rerank 全量候选校验
-- 标准模型列表、Magpie 丰富元数据、Anthropic/Gemini 分页
-- SSRF / DNS rebinding、日志脱敏
-- Starter 自动装配与环回守卫
-- Server 鉴权、别名路由、SSE、tools、embeddings、rerank、指标和端到端错误分类
+| 范围 | 覆盖 |
+| --- | --- |
+| Core | 40 tests：三协议转换、SSE 分片、structured fallback、LENGTH usage、SSRF、模型发现、探针、日志脱敏 |
+| Starter | 12 tests：自动装配、属性绑定、Bean 覆盖、环回白名单、非 local/test 启动拒绝 |
+| Server | 8 tests：鉴权、别名路由、SSE、tools、embeddings、rerank、429/504、Micrometer |
 
-## License
+测试全部使用真实本地 `com.sun.net.httpserver.HttpServer`，不使用假响应或跳过测试。
 
-Apache License 2.0，见 [LICENSE](LICENSE)。
+Release 流程：
+
+```bash
+git tag -a v0.1.0 -m "ai-model-bridge v0.1.0"
+git push origin v0.1.0
+```
+
+JitPack 多模块坐标：
+
+```text
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.1.0
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.1.0
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-server:v0.1.0
+```
+
+## 🗺️ 兼容与范围
+
+- Core 不引入 Spring，可在普通 Java、Quarkus、Micronaut 或已有 Spring 应用中使用。
+- Starter 以 Spring Boot 3.4.5 编译，并保持 Boot 4.x 自动装配方式兼容。
+- Server 定位是**通用可选网关**，不承担账号、租户、计费、业务数据库或审批流。
+- 当前优先支持文本、SSE、tools、embedding、rerank；图片/音频/视频的完整多模态映射不在 v0.1.0 范围。
+
+## 🙏 参考与致谢
+
+- [Magpie](https://github.com/yetone/magpie)：`/v1/models` 丰富元数据、OpenAI 兼容网关形态与路由思路参考。
+- [OpenAI API](https://platform.openai.com/docs/api-reference)、[Anthropic Messages API](https://docs.anthropic.com/)、[Google Gemini API](https://ai.google.dev/)：协议语义参考。
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)、[Ollama](https://github.com/ollama/ollama)：Embedding / Rerank 接口参考。
+
+本项目只借鉴公开协议与接口形态，不复制参考仓库的业务代码或内部实现。
+
+## 📄 License
+
+[Apache License 2.0](LICENSE)
+
+<div align="center">
+
+**如果这个项目对你有帮助，欢迎 Star ⭐**
+
+</div>
