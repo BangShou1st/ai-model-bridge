@@ -1,0 +1,43 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: ai-model-bridge-server
+  profiles:
+    default: local
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+ai:
+  bridge:
+    security:
+      allow-loopback: true
+      loopback-hosts:
+        - 127.0.0.1
+        - ::1
+        - localhost
+      loopback-ports:
+        - 3425
+        - 8000
+        - 8001
+        - 11434
+    gateway:
+      auth-enabled: true
+      api-keys:
+        - ${AI_BRIDGE_GATEWAY_API_KEY:}
+      upstreams: {}
+      aliases: {}
+
+logging:
+  level:
+    io.github.bangshou1st.modelbridge: INFO
