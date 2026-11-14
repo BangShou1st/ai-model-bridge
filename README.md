@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/banner.svg" alt="AI Model Bridge" width="100%" />
+
 # AI Model Bridge
 
 ### 统一模型协议、流式输出与工具调用的 Java 接入层

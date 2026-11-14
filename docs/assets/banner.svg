@@ -1,0 +1,87 @@
+<svg width="1280" height="420" viewBox="0 0 1280 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A0F1E"/>
+      <stop offset="0.55" stop-color="#11182D"/>
+      <stop offset="1" stop-color="#17152B"/>
+    </linearGradient>
+    <linearGradient id="title" x1="90" y1="150" x2="670" y2="150" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#A8F5E4"/>
+    </linearGradient>
+    <linearGradient id="line" x1="90" y1="0" x2="1130" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4EE1C1" stop-opacity="0"/>
+      <stop offset="0.25" stop-color="#4EE1C1"/>
+      <stop offset="0.7" stop-color="#8B7CF6"/>
+      <stop offset="1" stop-color="#8B7CF6" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1060 110) rotate(132) scale(360 300)">
+      <stop stop-color="#8B7CF6" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#8B7CF6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(190 360) rotate(-24) scale(310 240)">
+      <stop stop-color="#4EE1C1" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#4EE1C1" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M 36 0 L 0 0 0 36" stroke="#FFFFFF" stroke-opacity="0.035" fill="none"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="24" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="420" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="420" rx="28" fill="url(#grid)"/>
+  <rect width="1280" height="420" rx="28" fill="url(#glow1)"/>
+  <rect width="1280" height="420" rx="28" fill="url(#glow2)"/>
+  <rect x="1" y="1" width="1278" height="418" rx="27" stroke="white" stroke-opacity="0.08"/>
+  <rect x="90" y="348" width="1100" height="1" fill="url(#line)"/>
+
+  <g opacity="0.9">
+    <rect x="90" y="56" width="36" height="36" rx="10" fill="#4EE1C1" fill-opacity="0.14" stroke="#4EE1C1" stroke-opacity="0.45"/>
+    <path d="M99 65.5H108M99 70.5H113M99 75.5H105M103.5 65.5V79.5" stroke="#7FF1D8" stroke-width="2" stroke-linecap="round"/>
+    <text x="140" y="81" fill="#C7D2E5" font-family="Inter, Segoe UI, sans-serif" font-size="16" font-weight="600" letter-spacing="2.6">JAVA 21 · ZERO SPRING CORE</text>
+  </g>
+
+  <text x="88" y="170" fill="url(#title)" font-family="Inter, Segoe UI, sans-serif" font-size="74" font-weight="800" letter-spacing="-2.8">AI Model Bridge</text>
+  <text x="92" y="216" fill="#B7C1D9" font-family="Inter, Segoe UI, sans-serif" font-size="23" font-weight="450">One bridge. Every model protocol.</text>
+  <text x="92" y="250" fill="#7E8AA6" font-family="Inter, Segoe UI, sans-serif" font-size="17">Chat · Native Tools · SSE · Structured Output · Embedding · Rerank · Discovery · Capability Probe</text>
+
+  <g font-family="Inter, Segoe UI, sans-serif" font-size="14" font-weight="600">
+    <rect x="92" y="286" width="106" height="34" rx="17" fill="#4EE1C1" fill-opacity="0.12" stroke="#4EE1C1" stroke-opacity="0.35"/>
+    <text x="145" y="308" text-anchor="middle" fill="#8BF3DC">OpenAI</text>
+    <rect x="210" y="286" width="112" height="34" rx="17" fill="#FFB86B" fill-opacity="0.11" stroke="#FFB86B" stroke-opacity="0.3"/>
+    <text x="266" y="308" text-anchor="middle" fill="#FFD09A">Anthropic</text>
+    <rect x="334" y="286" width="96" height="34" rx="17" fill="#6EA8FE" fill-opacity="0.12" stroke="#6EA8FE" stroke-opacity="0.35"/>
+    <text x="382" y="308" text-anchor="middle" fill="#A9C8FF">Gemini</text>
+    <rect x="442" y="286" width="96" height="34" rx="17" fill="#FFFFFF" fill-opacity="0.08" stroke="#FFFFFF" stroke-opacity="0.2"/>
+    <text x="490" y="308" text-anchor="middle" fill="#D7DDEC">Ollama</text>
+    <rect x="550" y="286" width="118" height="34" rx="17" fill="#8B7CF6" fill-opacity="0.12" stroke="#8B7CF6" stroke-opacity="0.35"/>
+    <text x="609" y="308" text-anchor="middle" fill="#C2B8FF">llama.cpp</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="806" y="80" width="360" height="274" rx="22" fill="#0D1426" fill-opacity="0.82" stroke="#FFFFFF" stroke-opacity="0.1"/>
+    <rect x="830" y="106" width="312" height="64" rx="14" fill="#4EE1C1" fill-opacity="0.08" stroke="#4EE1C1" stroke-opacity="0.24"/>
+    <circle cx="856" cy="138" r="9" fill="#4EE1C1"/>
+    <text x="878" y="133" fill="#E9F1FF" font-family="Inter, Segoe UI, sans-serif" font-size="15" font-weight="700">ai-model-bridge-core</text>
+    <text x="878" y="151" fill="#7F8CA8" font-family="Inter, Segoe UI, sans-serif" font-size="12">contracts · adapters · security</text>
+
+    <rect x="830" y="184" width="312" height="64" rx="14" fill="#8B7CF6" fill-opacity="0.08" stroke="#8B7CF6" stroke-opacity="0.24"/>
+    <circle cx="856" cy="216" r="9" fill="#8B7CF6"/>
+    <text x="878" y="211" fill="#E9F1FF" font-family="Inter, Segoe UI, sans-serif" font-size="15" font-weight="700">spring-boot-starter</text>
+    <text x="878" y="229" fill="#7F8CA8" font-family="Inter, Segoe UI, sans-serif" font-size="12">conditional beans · zero business</text>
+
+    <rect x="830" y="262" width="312" height="64" rx="14" fill="#FFB86B" fill-opacity="0.07" stroke="#FFB86B" stroke-opacity="0.22"/>
+    <circle cx="856" cy="294" r="9" fill="#FFB86B"/>
+    <text x="878" y="289" fill="#E9F1FF" font-family="Inter, Segoe UI, sans-serif" font-size="15" font-weight="700">optional gateway</text>
+    <text x="878" y="307" fill="#7F8CA8" font-family="Inter, Segoe UI, sans-serif" font-size="12">/v1/models · chat · sse · tools · rerank</text>
+  </g>
+
+  <g opacity="0.6">
+    <circle cx="1180" cy="54" r="3" fill="#4EE1C1"/>
+    <circle cx="1200" cy="54" r="3" fill="#8B7CF6"/>
+    <circle cx="1220" cy="54" r="3" fill="#FFB86B"/>
+  </g>
+</svg>
