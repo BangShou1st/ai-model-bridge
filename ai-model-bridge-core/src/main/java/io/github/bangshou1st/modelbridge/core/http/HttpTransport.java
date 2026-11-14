@@ -166,7 +166,7 @@ public final class HttpTransport {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(config.requestTimeout() == null ? defaultRequestTimeout : config.requestTimeout())
                 .header("Accept", accept)
-                .header("User-Agent", "ai-model-bridge/0.1.0");
+                .header("User-Agent", "ai-model-bridge/0.1.1");
         if (headers != null) {
             headers.forEach((key, value) -> {
                 if (key != null && value != null && !key.isBlank()) {

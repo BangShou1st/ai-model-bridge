@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-14
+
+### Fixed
+
+- Capability probes now use token budgets suitable for reasoning models, avoiding false
+  `LENGTH` results when providers spend output tokens on hidden reasoning.
+- Capability report JSON now exposes `duration_ms`, `error_category`, `http_status`,
+  `started_at` and `supports_all`.
+
 ## [0.1.0] - 2026-11-14
 
 ### Added
@@ -31,5 +40,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Loopback access requires both host and port allowlists and a `local` or `test` profile.
 - Upstream response bodies, API keys and prompt text are never written to logs.
 
-[Unreleased]: https://github.com/BangShou1st/ai-model-bridge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/BangShou1st/ai-model-bridge/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.0

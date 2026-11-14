@@ -57,7 +57,7 @@ public final class CapabilityProber {
         ChatRequest request = ChatRequest.builder(model)
                 .user("Reply with one short token.")
                 .temperature(0.0)
-                .maxOutputTokens(8)
+                .maxOutputTokens(512)
                 .build();
         client.completeStream(provider, request, chunk -> {
             if (chunk.type() == StreamChunk.Type.CONTENT) {
@@ -82,7 +82,7 @@ public final class CapabilityProber {
         ChatRequest request = ChatRequest.builder(model)
                 .user("Return the requested JSON object.")
                 .temperature(0.0)
-                .maxOutputTokens(32)
+                .maxOutputTokens(1024)
                 .structuredOutput(StructuredOutput.jsonSchema("bridge_probe", schema, false))
                 .build();
         ChatResponse response = client.complete(provider, request);
@@ -103,7 +103,7 @@ public final class CapabilityProber {
         TurnRequest request = new TurnRequest(model,
                 List.of(io.github.bangshou1st.modelbridge.core.model.Message.user(
                         "Call bridge_probe with note=ok.")),
-                List.of(tool), ToolChoice.REQUIRED, 0.0, 32, null, java.util.Map.of(), null);
+                List.of(tool), ToolChoice.REQUIRED, 0.0, 1024, null, java.util.Map.of(), null);
         TurnResult result = client.turn(provider, request);
         boolean called = result.toolCalls().stream()
                 .anyMatch(call -> "bridge_probe".equals(call.name()));

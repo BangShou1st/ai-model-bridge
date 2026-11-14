@@ -50,7 +50,7 @@
 ---
 
 > [!TIP]
-> **v0.1.0** 已提供 JitPack 多模块坐标。核心库零 Spring 依赖；Starter 同时面向 Spring Boot 3.4+ 与 4.x；Server 可直接作为 Magpie、OpenAI、Anthropic、Gemini、Ollama、llama.cpp 的统一接入面。
+> **v0.1.1** 已提供 JitPack 多模块坐标。核心库零 Spring 依赖；Starter 同时面向 Spring Boot 3.4+ 与 4.x；Server 可直接作为 Magpie、OpenAI、Anthropic、Gemini、Ollama、llama.cpp 的统一接入面。
 
 ## 🌉 为什么需要 AI Model Bridge
 
@@ -205,17 +205,17 @@ repositories {
 <dependency>
     <groupId>com.github.BangShou1st.ai-model-bridge</groupId>
     <artifactId>ai-model-bridge-core</artifactId>
-    <version>v0.1.0</version>
+    <version>v0.1.1</version>
 </dependency>
 ```
 
 ```groovy
-implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.1.0'
-implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.1.0'
+implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.1.1'
+implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.1.1'
 ```
 
 JitPack 构建日志：
-**[v0.1.0 build.log](https://jitpack.io/com/github/BangShou1st/ai-model-bridge/v0.1.0/build.log)**
+**[v0.1.1 build.log](https://jitpack.io/com/github/BangShou1st/ai-model-bridge/v0.1.1/build.log)**
 
 ### 直接调用 Core
 
@@ -277,7 +277,7 @@ TurnResult result = client.turn(provider, turn);
 <dependency>
     <groupId>com.github.BangShou1st.ai-model-bridge</groupId>
     <artifactId>ai-model-bridge-spring-boot-starter</artifactId>
-    <version>v0.1.0</version>
+    <version>v0.1.1</version>
 </dependency>
 ```
 
@@ -365,7 +365,7 @@ ai:
 
 ```powershell
 $env:AI_BRIDGE_GATEWAY_API_KEY = "dev-secret"
-java -jar ai-model-bridge-server/target/ai-model-bridge-server-0.1.0.jar --spring.profiles.active=local
+java -jar ai-model-bridge-server/target/ai-model-bridge-server-0.1.1.jar --spring.profiles.active=local
 ```
 
 ### API Surface
@@ -462,16 +462,16 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 Release 流程：
 
 ```bash
-git tag -a v0.1.0 -m "ai-model-bridge v0.1.0"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "ai-model-bridge v0.1.1"
+git push origin v0.1.1
 ```
 
 JitPack 多模块坐标：
 
 ```text
-com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.1.0
-com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.1.0
-com.github.BangShou1st.ai-model-bridge:ai-model-bridge-server:v0.1.0
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.1.1
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.1.1
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-server:v0.1.1
 ```
 
 ## 🗺️ 兼容与范围
@@ -479,7 +479,7 @@ com.github.BangShou1st.ai-model-bridge:ai-model-bridge-server:v0.1.0
 - Core 不引入 Spring，可在普通 Java、Quarkus、Micronaut 或已有 Spring 应用中使用。
 - Starter 以 Spring Boot 3.4.5 编译，并保持 Boot 4.x 自动装配方式兼容。
 - Server 定位是**通用可选网关**，不承担账号、租户、计费、业务数据库或审批流。
-- 当前优先支持文本、SSE、tools、embedding、rerank；图片/音频/视频的完整多模态映射不在 v0.1.0 范围。
+- 当前优先支持文本、SSE、tools、embedding、rerank；图片/音频/视频的完整多模态映射不在 v0.1.1 范围。
 
 ## 🙏 参考与致谢
 
