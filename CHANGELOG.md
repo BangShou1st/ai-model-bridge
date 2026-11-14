@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-14
+
+### Added
+
+- Native Gemini embedding support through `batchEmbedContents`, with 3072-dimension
+  `gemini-embedding-001` verification.
+
 ## [0.1.1] - 2026-11-14
 
 ### Fixed
@@ -40,6 +47,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Loopback access requires both host and port allowlists and a `local` or `test` profile.
 - Upstream response bodies, API keys and prompt text are never written to logs.
 
-[Unreleased]: https://github.com/BangShou1st/ai-model-bridge/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/BangShou1st/ai-model-bridge/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.0

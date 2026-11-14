@@ -6,7 +6,7 @@
 
     <groupId>com.github.BangShou1st.ai-model-bridge</groupId>
     <artifactId>ai-model-bridge</artifactId>
-    <version>0.1.1</version>
+    <version>0.1.2</version>
     <packaging>pom</packaging>
 
     <name>ai-model-bridge</name>
@@ -32,7 +32,7 @@
         <connection>scm:git:https://github.com/BangShou1st/ai-model-bridge.git</connection>
         <developerConnection>scm:git:git@github.com:BangShou1st/ai-model-bridge.git</developerConnection>
         <url>https://github.com/BangShou1st/ai-model-bridge</url>
-        <tag>v0.1.1</tag>
+        <tag>v0.1.2</tag>
     </scm>
 
     <modules>

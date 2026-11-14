@@ -122,6 +122,34 @@ class EmbeddingAdapterTest {
         }
     }
 
+    @Test
+    void geminiUsesBatchEmbedContentsAndApiKeyHeader() throws Exception {
+        try (LocalFeatureServer server = LocalFeatureServer.start(request -> new LocalFeatureServer.Response(
+                200, "application/json",
+                """
+                {"embeddings":[{"values":[0.1,0.2]},{"values":[0.3,0.4]}]}
+                """))) {
+            EmbeddingAdapter adapter = adapter(server);
+            ProviderConfig provider = provider(server, ProviderType.GEMINI, "gemini-secret");
+            EmbeddingResult result = adapter.embed(provider,
+                    new EmbeddingRequest("gemini-embedding-001", List.of("a", "b"), 2, Map.of()));
+
+            assertThat(result.embeddings()).containsExactly(List.of(0.1, 0.2), List.of(0.3, 0.4));
+            LocalFeatureServer.Request request = server.requests().getFirst();
+            assertThat(request.path())
+                    .isEqualTo("/v1beta/models/gemini-embedding-001:batchEmbedContents");
+            assertThat(request.header("x-goog-api-key")).isEqualTo("gemini-secret");
+            JsonNode body = mapper.readTree(request.body());
+            assertThat(body.path("requests")).hasSize(2);
+            assertThat(body.path("requests").get(0).path("model").asText())
+                    .isEqualTo("models/gemini-embedding-001");
+            assertThat(body.path("requests").get(0).path("content").path("parts").get(0)
+                    .path("text").asText()).isEqualTo("a");
+            assertThat(body.path("requests").get(0).path("outputDimensionality").asInt())
+                    .isEqualTo(2);
+        }
+    }
+
     private EmbeddingAdapter adapter(LocalFeatureServer server) {
         OutboundEndpointPolicy policy = OutboundEndpointPolicy.localDevelopment(
                 java.util.Set.of(server.port()));

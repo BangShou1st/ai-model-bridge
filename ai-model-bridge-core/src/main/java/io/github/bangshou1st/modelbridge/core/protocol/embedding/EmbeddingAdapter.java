@@ -37,7 +37,7 @@ public final class EmbeddingAdapter implements EmbeddingProtocolAdapter {
 
     @Override
     public Set<ProviderType> providerTypes() {
-        return Set.of(ProviderType.OPENAI_COMPATIBLE, ProviderType.OLLAMA);
+        return Set.of(ProviderType.OPENAI_COMPATIBLE, ProviderType.OLLAMA, ProviderType.GEMINI);
     }
 
     @Override
@@ -46,9 +46,41 @@ public final class EmbeddingAdapter implements EmbeddingProtocolAdapter {
         return switch (provider.type()) {
             case OPENAI_COMPATIBLE -> openAi(provider, request, started);
             case OLLAMA -> ollama(provider, request, started);
+            case GEMINI -> gemini(provider, request, started);
             default -> throw new ModelBridgeException(ErrorCategory.UNSUPPORTED,
                     "embedding is not supported for " + provider.type(), provider.id());
         };
+    }
+
+    private EmbeddingResult gemini(ProviderConfig provider, EmbeddingRequest request, long started) {
+        String model = request.model().startsWith("models/")
+                ? request.model().substring("models/".length()) : request.model();
+        String endpoint = Endpoints.endpoint(provider, "embeddingsPath", "/v1beta",
+                "/models/" + model + ":batchEmbedContents");
+        ObjectNode body = mapper.createObjectNode();
+        ArrayNode requests = body.putArray("requests");
+        for (String input : request.inputs()) {
+            ObjectNode item = requests.addObject();
+            item.put("model", "models/" + model);
+            item.putObject("content").putArray("parts").addObject().put("text", input);
+            item.put("taskType", Endpoints.option(provider, "embeddingTaskType",
+                    "RETRIEVAL_DOCUMENT"));
+            if (request.dimensions() != null) {
+                item.put("outputDimensionality", request.dimensions());
+            }
+        }
+        JsonNode values = http.postJson(provider, endpoint, headers(provider, false), body)
+                .path("embeddings");
+        if (!values.isArray() || values.size() != request.inputs().size()) {
+            throw ModelBridgeException.schema(
+                    "Gemini embedding count does not match input count", provider.id());
+        }
+        List<List<Double>> embeddings = new ArrayList<>(values.size());
+        for (JsonNode value : values) {
+            embeddings.add(vector(value.path("values"), provider.id()));
+        }
+        return new EmbeddingResult(request.model(), provider.id(), embeddings,
+                TokenUsage.empty(), elapsed(started));
     }
 
     private EmbeddingResult openAi(ProviderConfig provider, EmbeddingRequest request, long started) {
@@ -180,6 +212,10 @@ public final class EmbeddingAdapter implements EmbeddingProtocolAdapter {
         Map<String, String> headers = new LinkedHashMap<>(provider.headers());
         if (bearer && provider.apiKey() != null && !provider.apiKey().isBlank()) {
             headers.putIfAbsent("Authorization", "Bearer " + provider.apiKey());
+        }
+        if (provider.type() == ProviderType.GEMINI
+                && provider.apiKey() != null && !provider.apiKey().isBlank()) {
+            headers.putIfAbsent("x-goog-api-key", provider.apiKey());
         }
         return headers;
     }
