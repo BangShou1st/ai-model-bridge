@@ -50,7 +50,7 @@
 ---
 
 > [!TIP]
-> **v0.2.0** 已完成框架化升级：开放协议 SPI、声明式 `ModelRouter`、`ChatModel` / `EmbeddingModel` / `RerankModel`、可取消流、统一拦截器管道。核心库仍保持零 Spring 依赖，Starter 同时面向 Spring Boot 3.4+ 与 4.x。
+> **v0.2.1** 已完成连接期公网 DNS 防护补强：在 v0.2.0 的协议 SPI、声明式 `ModelRouter`、可取消流与拦截器管道之上，`PUBLIC_HTTPS_ONLY` 默认使用 Apache HttpClient 5 的连接期 DNS 解析器。
 
 ## 🌉 为什么需要 AI Model Bridge
 
@@ -206,17 +206,17 @@ repositories {
 <dependency>
     <groupId>com.github.BangShou1st.ai-model-bridge</groupId>
     <artifactId>ai-model-bridge-core</artifactId>
-    <version>v0.2.0</version>
+    <version>v0.2.1</version>
 </dependency>
 ```
 
 ```groovy
-implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.2.0'
-implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.2.0'
+implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.2.1'
+implementation 'com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.2.1'
 ```
 
 JitPack 构建日志：
-**[v0.2.0 build.log](https://jitpack.io/com/github/BangShou1st/ai-model-bridge/v0.2.0/build.log)**
+**[v0.2.1 build.log](https://jitpack.io/com/github/BangShou1st/ai-model-bridge/v0.2.1/build.log)**
 
 ### 直接调用 Core
 
@@ -296,7 +296,7 @@ TurnResult result = client.turn(provider, turn);
 <dependency>
     <groupId>com.github.BangShou1st.ai-model-bridge</groupId>
     <artifactId>ai-model-bridge-spring-boot-starter</artifactId>
-    <version>v0.2.0</version>
+    <version>v0.2.1</version>
 </dependency>
 ```
 
@@ -601,16 +601,16 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 Release 流程：
 
 ```bash
-git tag -a v0.2.0 -m "ai-model-bridge v0.2.0"
-git push origin v0.2.0
+git tag -a v0.2.1 -m "ai-model-bridge v0.2.1"
+git push origin v0.2.1
 ```
 
 JitPack 多模块坐标：
 
 ```text
-com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.2.0
-com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.2.0
-com.github.BangShou1st.ai-model-bridge:ai-model-bridge-server:v0.2.0
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-core:v0.2.1
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-spring-boot-starter:v0.2.1
+com.github.BangShou1st.ai-model-bridge:ai-model-bridge-server:v0.2.1
 ```
 
 ## 🗺️ 兼容与范围

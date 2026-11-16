@@ -18,6 +18,20 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Qualified model references cannot be shadowed by conflicting global or model aliases;
   startup reports the alias, its targets and the affected model target.
 
+## [0.2.1] - 2026-11-17
+
+### Changed
+
+- `HttpTransport` now uses a connection-time public-only DNS resolver backed by
+  Apache HttpClient 5 when the configured policy is `PUBLIC_HTTPS_ONLY`. Private
+  and loopback policies retain the legacy JDK transport for local mocks.
+
+### Security
+
+- DNS answers that change to private, loopback, link-local or cloud-metadata
+  addresses between pre-flight validation and socket connect are rejected before
+  the request body is sent.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
@@ -122,7 +136,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Loopback access requires both host and port allowlists and a `local` or `test` profile.
 - Upstream response bodies, API keys and prompt text are never written to logs.
 
-[Unreleased]: https://github.com/BangShou1st/ai-model-bridge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BangShou1st/ai-model-bridge/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.2.1
 [0.2.0]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.2.0
 [0.1.2]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BangShou1st/ai-model-bridge/releases/tag/v0.1.1
